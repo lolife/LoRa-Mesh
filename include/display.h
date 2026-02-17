@@ -1,6 +1,15 @@
 #pragma once
 #include <M5Unified.h>
 
+#pragma pack(push, 1) // Force alignment to 1 byte (no padding)
+struct gpsData {
+    double latitude;
+    double longitude;
+    float altitude;
+    float speed;
+};
+#pragma pack(pop) // Restore default alignment
+
 /**
  * Display a centered message on the screen
  * @param msg Message to display
@@ -23,22 +32,4 @@ void centerCursor(const lgfx::GFXfont* font, int size, const char* text);
  * @param counter Packet counter (for sender)
  * @param isSender True if sender, false if receiver
  */
-void updateDisplay(uint16_t screenColor, int counter, bool isSender);
-
-/**
- * Convert RGB565 color to individual RGB components
- * @param color RGB565 color value
- * @param r Output red component (0-255)
- * @param g Output green component (0-255)
- * @param b Output blue component (0-255)
- */
-void rgb565ToRGB(uint16_t color, int& r, int& g, int& b);
-
-/**
- * Calculate perceived luminance from RGB values
- * @param r Red component (0-255)
- * @param g Green component (0-255)
- * @param b Blue component (0-255)
- * @return Luminance value (0-255)
- */
-int calculateLuminance(int r, int g, int b);
+void updateDisplay( gpsData location, int counter, bool isSender);
