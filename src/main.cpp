@@ -7,33 +7,22 @@
 #include "lora_config.h"
 #include "display.h"
 #include "credentials.h"
+#include "mk_mqtt_lib.h"
 
-// #pragma pack(push, 1) // Force alignment to 1 byte (no padding)
-// struct gpsData {
-//     float latitude;
-//     float longitude;
-//     float altitude;
-//     float speed;
-// };
-// #pragma pack(pop) // Restore default alignment
-
-#define TAG "LoRaMesh"
-
-gpsData location = { 0.0, 0.0, 0.0, 0.0 };
-char packetBuffer[128];
-
+gpsData location     = { 0.0, 0.0, 0.0, 0.0 };
+gpsData newLocation  = { 0.0, 0.0, 0.0, 0.0 };
 
 // Global variables
-int counter = 0;
-uint16_t screenColor = TFT_NAVY;
+uint16_t screenColor = TFT_DARKGREEN;
 
 #ifdef SENDER
+#define TAG "➡️LoRaMeshSender"
     #include <TinyGPSPlus.h>
     TinyGPSPlus gps;
     static const uint32_t GPSBaud = 115200;
-    static const int RXPin = 16, TXPin = 17;
+    static const int RXPin = 18, TXPin = 17;
 #else
-#include "mk_mqtt_lib.h"
+    #define TAG "⬅️LoRaMeshReceiver"
 #endif
 
 // Function prototypes
@@ -43,9 +32,11 @@ void handleReceiver();
 static void smartDelay(unsigned long ms);
 void postToThingsBoard(gpsData newData);
 bool initializeWiFi();
+bool nearlyZero( double valueToCheck );
+bool locationInBounds( gpsData newLocation );
 
 void setup() {
-    Serial.begin( 115200 );
+    //Serial.begin( 115200 );
     // Initialize M5Stack with proper configuration
     auto cfg = M5.config();
     cfg.clear_display = true;
@@ -55,28 +46,33 @@ void setup() {
     cfg.internal_mic = false;  // Disable microphone
     M5.begin(cfg);
     
-    M5.Display.setBrightness(75);
-    M5.Display.setRotation(0);
+    M5.Display.setBrightness(66);
+    M5.Display.setRotation(1);
     M5.Display.setFont(&Orbitron_Light_32);
 
     // Initialize LoRa
     setupLoRa();
     
     // Display initial mode
-#ifdef SENDER
-    Serial1.begin( GPSBaud, SERIAL_8N1, RXPin, TXPin );
-    displayMessage("LoRa Sender", true, screenColor);
-#else
     initializeWiFi();
     mqttClient.setCallback(mqttCallback);
-    displayMessage("Going Dark", true, screenColor);
-    M5.Display.setBrightness(0);
+#ifdef SENDER
+    screenColor = TFT_NAVY;
+    //M5.Display.setRotation(0);
+    Serial1.begin( GPSBaud, SERIAL_8N1, RXPin, TXPin );
+    ESP_LOGI( TAG, "%s", "LoRa Sender" );
+    displayMessage("LoRa Sender", true, screenColor);
+#else
+    ESP_LOGI( TAG, "%s", "LoRa Receiverr" );
+    //displayMessage("Going Dark", true, screenColor);
+    //M5.Display.setBrightness(1);
 #endif
 } 
 
 void loop() {
     M5.update();
-    
+    ArduinoOTA.handle();
+
 #ifdef SENDER
     handleSender();
 #else
@@ -94,6 +90,7 @@ void setupLoRa() {
     
     // Start LoRa
     if (!LoRa.begin(LORA_FREQ)) {
+        ESP_LOGE( TAG, "%s", "LoRa init fail." );
         displayMessage("LoRa init fail.", true, screenColor);
         smartDelay(1000);
     }
@@ -113,7 +110,6 @@ void handleSender() {
         location.longitude           = gps.location.lng();
         location.altitude            = gps.altitude.meters();
         location.speed               = gps.speed.mph();
-        snprintf( packetBuffer, sizeof(packetBuffer), "%.2f %.2f", location.latitude, location.longitude );
 
         // Send packet at regular intervals
         if (millis() - lastPacketTime > PACKET_INTERVAL) {
@@ -122,11 +118,11 @@ void handleSender() {
             LoRa.beginPacket();
             LoRa.print( (char *)&location );
             LoRa.endPacket();
-            Serial.printf( "Sent packet: %s\n", packetBuffer );
-            counter++;
+
+            ESP_LOGI( TAG, "Sent packet of size %d", sizeof(location) );
             
             // Update display immediately after sending
-            updateDisplay( location, counter, true);
+            updateDisplay( location, true);
             lastDisplayUpdate = millis();
         }
     }
@@ -134,7 +130,7 @@ void handleSender() {
 
     // Periodic display update
     if (millis() - lastDisplayUpdate > DISPLAY_UPDATE) {
-        updateDisplay(location, counter, true);
+        updateDisplay(location, true);
         lastDisplayUpdate = millis();
     }
 }
@@ -144,12 +140,10 @@ void handleReceiver() {
     static long lastPacketTime = millis();
     static long lastDisplayUpdate = millis();
 
-    ArduinoOTA.handle();
-
     // Check for incoming packets
     int packetSize = LoRa.parsePacket();
-    gpsData newLocation  = { 0.0, 0.0, 0.0, 0.0 };
-    if (packetSize) {
+
+    if (packetSize == sizeof(location) ) {
         char msg[MAX_MSG_SIZE];
         ESP_LOGI( TAG, "Got packet size %d", packetSize );
 
@@ -157,8 +151,8 @@ void handleReceiver() {
 
         // Limit reading to buffer size
         int bytesToRead = packetSize;
-        if (bytesToRead > MAX_MSG_SIZE - 1) {
-            bytesToRead = MAX_MSG_SIZE - 1;
+        if (bytesToRead > MAX_MSG_SIZE) {
+            bytesToRead = MAX_MSG_SIZE;
         }
         
         // Read packet data
@@ -168,24 +162,27 @@ void handleReceiver() {
         }
         // Drain any remaining bytes
         while (LoRa.available()) {
+            ESP_LOGV( TAG, "%s", "Throwing away data" );
             LoRa.read();
         }
         //msg[i] = '\0';
     
-        memcpy( &newLocation, msg, i-1 );
-        ESP_LOGI( TAG, "Got msg: %.8f", newLocation.latitude );
-        postToThingsBoard( newLocation);
-        // Update display with new data
-        updateDisplay(newLocation, counter, false);
-        lastDisplayUpdate = millis();
+        memcpy( &newLocation, msg, i );
+        ESP_LOGV( TAG, "Got msg: %.8f", newLocation.speed );
+        if( locationInBounds( newLocation ) ) {
+            postToThingsBoard( newLocation);
+            // Update display with new data
+            updateDisplay(newLocation, false);
+            lastDisplayUpdate = millis();
+        }
     }
     
     // Periodic display update and timeout check
     if (millis() - lastDisplayUpdate > DISPLAY_UPDATE) {
         // Check for communication timeout
-        // if (millis() - lastPacketTime > NO_CONTACT_TIMEOUT)
-        //     snprintf( msg, sizeof(msg), "%s", "No contact" );
-        updateDisplay( newLocation, counter, false);
+        if (millis() - lastPacketTime > NO_CONTACT_TIMEOUT )
+            newLocation = { 0.0, 0.0, 0.0, 0.0 };
+        updateDisplay( newLocation, false);
         lastDisplayUpdate = millis();
     }
 
@@ -202,19 +199,21 @@ void postToThingsBoard(gpsData newData) {
 
 const double EPSILON = 1e-9;  // or whatever tolerance makes sense for your use case
 
-    if( std::abs(newData.latitude) < EPSILON || 
-        newData.latitude > 90.0 || 
-        newData.latitude < -90.0 || 
-        std::abs(newData.longitude) < EPSILON || 
-        newData.longitude > 180.0 || 
-        newData.longitude < -180.0 )
+    if( nearlyZero(newData.latitude) || newData.latitude > 90.0 || newData.latitude < -90.0 ||
+            nearlyZero(newData.longitude) || newData.longitude > 180.0 || newData.longitude < -180.0 )
         return;
+
+    ESP_LOGV( TAG, "Considerintg posting %.1f", newData.speed );
+    if( newData.speed < 0.2 )
+        return;
+    ESP_LOGI( TAG, "%s", "Posting" );
 
     doc["latitude"] = newData.latitude;
     doc["longitude"] = newData.longitude;
     doc["altitude"] = newData.altitude;
     doc["speed"] = newData.speed;
-    doc["ip_address"] = WiFi.localIP().toString().c_str();
+    //doc["ip_address"] = WiFi.localIP().toString().c_str();
+    doc["pkt_rssi"] = LoRa.packetSnr();
 
     // Serialize the JSON object
     size_t n = serializeJson(doc, payload);
@@ -222,9 +221,9 @@ const double EPSILON = 1e-9;  // or whatever tolerance makes sense for your use 
     // Publish the payload
     bool success = mqttClient.publish(TELEMETRY_TOPIC, (const char*)payload, n);
 }
-
+#endif
 bool initializeWiFi() {
-    Serial.println("Connecting");
+    ESP_LOGI( TAG, "Connecting");
     
     // Configure WiFi for lower power
     WiFi.mode(WIFI_STA);
@@ -247,18 +246,16 @@ bool initializeWiFi() {
     bool connected = (WiFi.status() == WL_CONNECTED);
 
     if (connected) {
-        String ip = WiFi.localIP().toString();
-        Serial.println(ip.c_str());
-        Serial.println(WiFi.macAddress().c_str());
+        ESP_LOGI( TAG, "%s", WiFi.localIP().toString().c_str() );
+        ESP_LOGI( TAG, "%s", WiFi.macAddress().c_str()) ;
     } else {
-        Serial.println("Network failed!");
+        ESP_LOGE( TAG, "Network failed!" );
         return connected;
     }
 
     ArduinoOTA.begin();
     return connected;
 }
-#endif
 
 // This custom version of delay() ensures that the gps object
 // is being "fed".

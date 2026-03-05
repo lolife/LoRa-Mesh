@@ -29,7 +29,9 @@ void centerCursor(const lgfx::GFXfont* font, int size, const char* text);
 /**
  * Update display with current screen color and stats
  * @param screenColor Current screen color in RGB565 format
- * @param counter Packet counter (for sender)
  * @param isSender True if sender, false if receiver
  */
-void updateDisplay( gpsData location, int counter, bool isSender);
+void updateDisplay( gpsData location, bool isSender);
+
+bool nearlyZero( double valueToCheck );
+bool locationInBounds( gpsData newLocation );
