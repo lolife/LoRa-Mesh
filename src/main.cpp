@@ -11,9 +11,12 @@
 
 gpsData location     = { 0.0, 0.0, 0.0, 0.0 };
 gpsData newLocation  = { 0.0, 0.0, 0.0, 0.0 };
+static char status[4];
+static const char* ack = "ACK";
 
 // Global variables
 uint16_t screenColor = TFT_DARKGREEN;
+static long lastPacketTime = 0;
 
 #ifdef SENDER
 #define TAG "➡️LoRaMeshSender"
@@ -34,6 +37,8 @@ void postToThingsBoard(gpsData newData);
 bool initializeWiFi();
 bool nearlyZero( double valueToCheck );
 bool locationInBounds( gpsData newLocation );
+bool sendPacket( char *payload, int packetSize );
+int receivePacket();
 
 void setup() {
     //Serial.begin( 115200 );
@@ -49,7 +54,7 @@ void setup() {
     M5.Display.setBrightness(66);
     M5.Display.setRotation(1);
     M5.Display.setFont(&Orbitron_Light_32);
-
+    status[3] = '\0';
     // Initialize LoRa
     setupLoRa();
     
@@ -71,7 +76,7 @@ void setup() {
 
 void loop() {
     M5.update();
-    ArduinoOTA.handle();
+    //ArduinoOTA.handle();
 
 #ifdef SENDER
     handleSender();
@@ -101,6 +106,18 @@ void setupLoRa() {
     LoRa.setSpreadingFactor(LORA_SF);
 }
 
+bool sendPacket( char *payload, int packetSize ) {
+    LoRa.beginPacket();
+    for( int i=0; i< packetSize; ++i )
+        LoRa.write( (char)payload[i] );
+    LoRa.endPacket();
+
+    //ESP_LOGI( TAG, "Sent packet %s", payload );
+    if( LoRa.getWriteError() != 0 )
+        return false;
+    return true;
+}
+
 void handleSender() {
     static long lastPacketTime = millis();
     static long lastDisplayUpdate = millis();
@@ -115,11 +132,14 @@ void handleSender() {
         if (millis() - lastPacketTime > PACKET_INTERVAL) {
             lastPacketTime = millis();
 
-            LoRa.beginPacket();
-            LoRa.print( (char *)&location );
-            LoRa.endPacket();
-
-            ESP_LOGI( TAG, "Sent packet of size %d", sizeof(location) );
+            if( ! sendPacket( (char *)&location, sizeof(location) ) )
+                ESP_LOGE( TAG, "Error sending location" );
+            else {
+                int packetType = receivePacket();
+                if( packetType == 2 )
+                    displayMessage( status, true, TFT_GREEN );
+                    smartDelay(2000);
+            }
             
             // Update display immediately after sending
             updateDisplay( location, true);
@@ -135,48 +155,61 @@ void handleSender() {
     }
 }
 
-#ifdef RECEIVER
-void handleReceiver() {
-    static long lastPacketTime = millis();
-    static long lastDisplayUpdate = millis();
-
+int receivePacket() {
+    char msg[MAX_MSG_SIZE];
+    
     // Check for incoming packets
     int packetSize = LoRa.parsePacket();
+    if( packetSize < 1 )
+        return 0;
 
-    if (packetSize == sizeof(location) ) {
-        char msg[MAX_MSG_SIZE];
-        ESP_LOGI( TAG, "Got packet size %d", packetSize );
+    ESP_LOGI( TAG, "Got packet size %d", packetSize );
+    lastPacketTime = millis();
 
-        lastPacketTime = millis();
-
-        // Limit reading to buffer size
-        int bytesToRead = packetSize;
-        if (bytesToRead > MAX_MSG_SIZE) {
-            bytesToRead = MAX_MSG_SIZE;
-        }
-        
-        // Read packet data
-        int i = 0;
-        while (LoRa.available() && i < bytesToRead) {
-            msg[i++] = (char)LoRa.read();
-        }
-        // Drain any remaining bytes
-        while (LoRa.available()) {
-            ESP_LOGV( TAG, "%s", "Throwing away data" );
-            LoRa.read();
-        }
-        //msg[i] = '\0';
-    
-        memcpy( &newLocation, msg, i );
-        ESP_LOGV( TAG, "Got msg: %.8f", newLocation.speed );
-        if( locationInBounds( newLocation ) ) {
-            postToThingsBoard( newLocation);
-            // Update display with new data
-            updateDisplay(newLocation, false);
-            lastDisplayUpdate = millis();
-        }
+    // Limit reading to buffer size
+    int bytesToRead = packetSize;
+    if (bytesToRead > MAX_MSG_SIZE) {
+        bytesToRead = MAX_MSG_SIZE;
     }
     
+    // Read packet data
+    int i = 0;
+    while (LoRa.available() && i < bytesToRead) {
+        msg[i] = (char)LoRa.read();
+        //ESP_LOGD( TAG, "Got byte: %x", msg[i] );
+        i++;
+    }
+    // Drain any remaining bytes
+    while (LoRa.available()) {
+        ESP_LOGV( TAG, "%s", "Throwing away data" );
+        LoRa.read();
+    }
+
+    if (packetSize == sizeof(location) ) {
+        memcpy( &newLocation, msg, packetSize );
+        ESP_LOGV( TAG, "Got msg: %.8f", newLocation.speed );
+        return 1;
+    }
+    else {
+        //snprintf( status, 3, "%s", msg );
+        memcpy( &status, msg, 3 );
+        ESP_LOGV( TAG, "Got status: %s", status );
+        return 2;
+   }
+   return 0;
+}
+
+#ifdef RECEIVER
+void handleReceiver() {
+    static long lastDisplayUpdate = millis();
+
+
+    int packetType = receivePacket();
+    if( packetType == 1 ) { // got new location
+        sendPacket( (char*)ack, 3 );
+        updateDisplay( newLocation, false);
+    }
+
     // Periodic display update and timeout check
     if (millis() - lastDisplayUpdate > DISPLAY_UPDATE) {
         // Check for communication timeout
@@ -193,6 +226,7 @@ void handleReceiver() {
         lastMqttLoop = millis();
     }
 }
+
 void postToThingsBoard(gpsData newData) {
     unsigned char payload[TELEMETRY_DOC_SIZE];
     JsonDocument doc;
@@ -268,6 +302,7 @@ static void smartDelay(unsigned long ms) {
       //Serial.print(".");
     }
 #endif
+    ArduinoOTA.handle();
       delay(100);
   } while (millis() - start < ms);
 } 
