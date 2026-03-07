@@ -8,6 +8,13 @@ struct gpsData {
     float altitude;
     float speed;
 };
+
+struct loraStatus {
+    int code;
+    float snr;
+    int batt;
+};
+
 #pragma pack(pop) // Restore default alignment
 
 /**

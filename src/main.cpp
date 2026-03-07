@@ -54,7 +54,9 @@ void setup() {
     M5.Display.setBrightness(66);
     M5.Display.setRotation(1);
     M5.Display.setFont(&Orbitron_Light_32);
-    status[3] = '\0';
+
+    memset( status, '\0', sizeof(status) );
+    
     // Initialize LoRa
     setupLoRa();
     
@@ -111,6 +113,7 @@ bool sendPacket( char *payload, int packetSize ) {
     for( int i=0; i< packetSize; ++i )
         LoRa.write( (char)payload[i] );
     LoRa.endPacket();
+    delay(10);
 
     //ESP_LOGI( TAG, "Sent packet %s", payload );
     if( LoRa.getWriteError() != 0 )
@@ -185,15 +188,15 @@ int receivePacket() {
         LoRa.read();
     }
 
-    if (packetSize == sizeof(location) ) {
-        memcpy( &newLocation, msg, packetSize );
+    if (i == sizeof(location) ) {
+        memcpy( &newLocation, msg, i );
         ESP_LOGV( TAG, "Got msg: %.8f", newLocation.speed );
         return 1;
     }
-    else {
-        //snprintf( status, 3, "%s", msg );
-        memcpy( &status, msg, 3 );
-        ESP_LOGV( TAG, "Got status: %s", status );
+    else if (i == 12 ) {
+        loraStatus newStatus = { 0, 0.0, 0 };
+        memcpy( &newStatus, msg, i );
+        ESP_LOGI( TAG, "Got code: %d", newStatus.code );
         return 2;
    }
    return 0;
@@ -206,8 +209,10 @@ void handleReceiver() {
 
     int packetType = receivePacket();
     if( packetType == 1 ) { // got new location
-        sendPacket( (char*)ack, 3 );
+        loraStatus newStatus = { 0, LoRa.packetSnr(), M5.Power.getBatteryLevel() };
+        sendPacket( (char*)&newStatus, sizeof(newStatus) );
         updateDisplay( newLocation, false);
+        postToThingsBoard( newLocation );
     }
 
     // Periodic display update and timeout check
