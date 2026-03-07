@@ -2,6 +2,7 @@
 #include "M5_SX127X.h"
 
 extern uint16_t screenColor;
+extern loraStatus newStatus;
 
 void displayMessage(const char* msg, bool clearScreen, uint16_t bgColor) {
     if (clearScreen) {
@@ -40,7 +41,7 @@ void updateDisplay( gpsData location, bool isSender) {
             M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, (M5.Display.height() - M5.Display.fontHeight()) / 2);
             M5.Display.print( msg );
 
-            snprintf( msg, sizeof( msg ), "Batt: %d%%", M5.Power.getBatteryLevel() );
+            snprintf( msg, sizeof( msg ), "Them: %.0f Me: %.0f", newStatus.snr, LoRa.packetSnr() );
             M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.height()*3/4 );
             M5.Display.print( msg );
         }

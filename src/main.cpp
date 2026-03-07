@@ -4,6 +4,7 @@
 #include <ArduinoOTA.h>
 #include "esp_log.h"
 #include "M5_SX127X.h"
+#include <inttypes.h>
 #include "lora_config.h"
 #include "display.h"
 #include "credentials.h"
@@ -11,8 +12,11 @@
 
 gpsData location     = { 0.0, 0.0, 0.0, 0.0 };
 gpsData newLocation  = { 0.0, 0.0, 0.0, 0.0 };
-static char status[4];
-static const char* ack = "ACK";
+loraStatus newStatus = { 0, 0, 0.0, 0 };
+
+static uint32_t nextTxSeq = 0;
+static uint32_t lastRxLocationSeq = 0;
+static uint32_t lastRxAckSeq = 0;
 
 // Global variables
 uint16_t screenColor = TFT_DARKGREEN;
@@ -39,6 +43,9 @@ bool nearlyZero( double valueToCheck );
 bool locationInBounds( gpsData newLocation );
 bool sendPacket( char *payload, int packetSize );
 int receivePacket();
+bool waitForAck(uint32_t expectedSeq, unsigned long timeoutMs);
+bool sendLocationWithAckRetries(unsigned int maxAttempts);
+void serviceBackgroundTasks();
 
 void setup() {
     //Serial.begin( 115200 );
@@ -54,8 +61,6 @@ void setup() {
     M5.Display.setBrightness(66);
     M5.Display.setRotation(1);
     M5.Display.setFont(&Orbitron_Light_32);
-
-    memset( status, '\0', sizeof(status) );
     
     // Initialize LoRa
     setupLoRa();
@@ -106,6 +111,9 @@ void setupLoRa() {
     LoRa.setTxPower(LORA_TX_POWER);
     LoRa.setSignalBandwidth(LORA_BW);
     LoRa.setSpreadingFactor(LORA_SF);
+    LoRa.setCodingRate4(LORA_CODING_RATE);
+    LoRa.setSyncWord(LORA_SYNC_WORD);
+    LoRa.enableCrc();
 }
 
 bool sendPacket( char *payload, int packetSize ) {
@@ -135,14 +143,8 @@ void handleSender() {
         if (millis() - lastPacketTime > PACKET_INTERVAL) {
             lastPacketTime = millis();
 
-            if( ! sendPacket( (char *)&location, sizeof(location) ) )
+            if( !sendLocationWithAckRetries(ACK_RETRY_COUNT) )
                 ESP_LOGE( TAG, "Error sending location" );
-            else {
-                int packetType = receivePacket();
-                if( packetType == 2 )
-                    displayMessage( status, true, TFT_GREEN );
-                    smartDelay(2000);
-            }
             
             // Update display immediately after sending
             updateDisplay( location, true);
@@ -188,18 +190,72 @@ int receivePacket() {
         LoRa.read();
     }
 
-    if (i == sizeof(location) ) {
-        memcpy( &newLocation, msg, i );
+    if (i == sizeof(loraLocationPacket) ) {
+        loraLocationPacket locationPkt = { 0, 0, { 0.0, 0.0, 0.0, 0.0 } };
+        memcpy(&locationPkt, msg, i);
+        if (locationPkt.type != LORA_PKT_LOCATION) {
+            ESP_LOGW(TAG, "Unexpected type %u for location packet size", locationPkt.type);
+            return 0;
+        }
+        lastRxLocationSeq = locationPkt.seq;
+        newLocation = locationPkt.location;
         ESP_LOGV( TAG, "Got msg: %.8f", newLocation.speed );
         return 1;
     }
-    else if (i == 12 ) {
-        loraStatus newStatus = { 0, 0.0, 0 };
+    else if (i == sizeof(loraStatus) ) {
+        //loraStatus newStatus = { 0, 0, 0.0, 0 };
         memcpy( &newStatus, msg, i );
-        ESP_LOGI( TAG, "Got code: %d", newStatus.code );
+        ESP_LOGI( TAG, "SNR = %.1f", newStatus.snr );
+        if (newStatus.type != LORA_PKT_ACK) {
+            ESP_LOGW(TAG, "Unexpected type %u for ACK packet size", newStatus.type);
+            return 0;
+        }
+        lastRxAckSeq = newStatus.seq;
         return 2;
    }
+   ESP_LOGW(TAG, "Ignoring packet with unexpected size: %d", i);
    return 0;
+}
+
+bool waitForAck(uint32_t expectedSeq, unsigned long timeoutMs) {
+    unsigned long start = millis();
+    while (millis() - start < timeoutMs) {
+        serviceBackgroundTasks();
+        if (receivePacket() == 2 && lastRxAckSeq == expectedSeq)
+            return true;
+        delay(5);
+    }
+    return false;
+}
+
+bool sendLocationWithAckRetries(unsigned int maxAttempts) {
+    loraLocationPacket txPacket = { LORA_PKT_LOCATION, ++nextTxSeq, location };
+    for (unsigned int attempt = 1; attempt <= maxAttempts; ++attempt) {
+        if (!sendPacket((char *)&txPacket, sizeof(txPacket))) {
+            ESP_LOGE(TAG, "Send attempt %u failed", attempt);
+            continue;
+        }
+        if (waitForAck(txPacket.seq, ACK_TIMEOUT_MS)) {
+            ESP_LOGI(TAG, "ACK received on attempt %u", attempt);
+            M5.Display.setColor(TFT_GREEN);
+            M5.Display.fillCircle(20,20,10);
+            smartDelay(250);
+            return true;
+        }
+        ESP_LOGW(TAG, "ACK timeout on attempt %u", attempt);
+        serviceBackgroundTasks();
+    }
+    return false;
+}
+
+void serviceBackgroundTasks() {
+    M5.update();
+    ArduinoOTA.handle();
+#ifdef SENDER
+    while (Serial1.available()) {
+        gps.encode(Serial1.read());
+    }
+#endif
 }
 
 #ifdef RECEIVER
@@ -209,7 +265,8 @@ void handleReceiver() {
 
     int packetType = receivePacket();
     if( packetType == 1 ) { // got new location
-        loraStatus newStatus = { 0, LoRa.packetSnr(), M5.Power.getBatteryLevel() };
+        loraStatus newStatus = { LORA_PKT_ACK, lastRxLocationSeq, LoRa.packetSnr(), M5.Power.getBatteryLevel() };
+        ESP_LOGI(TAG, "Sending ACK seq: %" PRIu32, newStatus.seq);
         sendPacket( (char*)&newStatus, sizeof(newStatus) );
         updateDisplay( newLocation, false);
         postToThingsBoard( newLocation );
@@ -301,13 +358,7 @@ bool initializeWiFi() {
 static void smartDelay(unsigned long ms) {           
   unsigned long start = millis();
   do {         
-#ifdef SENDER
-    while (Serial1.available()) {
-      gps.encode(Serial1.read());
-      //Serial.print(".");
-    }
-#endif
-    ArduinoOTA.handle();
-      delay(100);
+      serviceBackgroundTasks();
+      delay(20);
   } while (millis() - start < ms);
 } 

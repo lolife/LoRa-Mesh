@@ -20,12 +20,16 @@
 
 // LoRa Parameters
 #define LORA_FREQ     433E6
-#define LORA_SF       12
+#define LORA_SF       9
 #define LORA_BW       125E3
-#define LORA_TX_POWER 9
+#define LORA_TX_POWER 14
+#define LORA_CODING_RATE 5
+#define LORA_SYNC_WORD 0x2D
 
 // Timing constants
-#define PACKET_INTERVAL 5000   // Send packet every n seconds (sender)
-#define DISPLAY_UPDATE 10001     // Update display every n seconds
+#define PACKET_INTERVAL 3000     // Send packet every n seconds (sender)
+#define DISPLAY_UPDATE 3000      // Update display every n seconds
 #define NO_CONTACT_TIMEOUT 60000 // Show "No contact" after n seconds
-#define LOOP_DELAY 1000          // Main loop delay
+#define LOOP_DELAY 100           // Main loop delay
+#define ACK_TIMEOUT_MS 2500
+#define ACK_RETRY_COUNT 4

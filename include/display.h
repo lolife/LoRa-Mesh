@@ -1,21 +1,36 @@
 #pragma once
 #include <M5Unified.h>
+#include <cstdint>
 
 #pragma pack(push, 1) // Force alignment to 1 byte (no padding)
 struct gpsData {
-    double latitude;
-    double longitude;
+    float latitude;
+    float longitude;
     float altitude;
     float speed;
 };
 
 struct loraStatus {
-    int code;
+    uint8_t type;
+    uint32_t seq;
     float snr;
-    int batt;
+    int32_t batt;
+};
+
+struct loraLocationPacket {
+    uint8_t type;
+    uint32_t seq;
+    gpsData location;
 };
 
 #pragma pack(pop) // Restore default alignment
+
+static constexpr uint8_t LORA_PKT_LOCATION = 0x01;
+static constexpr uint8_t LORA_PKT_ACK      = 0x02;
+
+static_assert(sizeof(gpsData) == 16, "gpsData size changed");
+static_assert(sizeof(loraStatus) == 13, "loraStatus size changed");
+static_assert(sizeof(loraLocationPacket) == 21, "loraLocationPacket size changed");
 
 /**
  * Display a centered message on the screen
