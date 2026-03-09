@@ -20,6 +20,8 @@ struct loraStatus {
 struct loraLocationPacket {
     uint8_t type;
     uint32_t seq;
+    float snr;
+    int32_t batt;
     gpsData location;
 };
 
@@ -30,7 +32,7 @@ static constexpr uint8_t LORA_PKT_ACK      = 0x02;
 
 static_assert(sizeof(gpsData) == 16, "gpsData size changed");
 static_assert(sizeof(loraStatus) == 13, "loraStatus size changed");
-static_assert(sizeof(loraLocationPacket) == 21, "loraLocationPacket size changed");
+static_assert(sizeof(loraLocationPacket) == 29, "loraLocationPacket size changed");
 
 /**
  * Display a centered message on the screen
@@ -53,7 +55,7 @@ void centerCursor(const lgfx::GFXfont* font, int size, const char* text);
  * @param screenColor Current screen color in RGB565 format
  * @param isSender True if sender, false if receiver
  */
-void updateDisplay( gpsData location, bool isSender);
+void updateDisplay( loraLocationPacket newPkt, bool isSender);
 
 bool nearlyZero( double valueToCheck );
 bool locationInBounds( gpsData newLocation );

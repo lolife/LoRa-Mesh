@@ -15,6 +15,7 @@
 gpsData location     = { 0.0, 0.0, 0.0, 0.0 };
 gpsData newLocation  = { 0.0, 0.0, 0.0, 0.0 };
 loraStatus newStatus = { 0, 0, 0.0, 0 };
+loraLocationPacket locationPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0 } };
 
 static uint32_t nextTxSeq = 0;
 static uint32_t lastRxLocationSeq = 0;
@@ -23,6 +24,8 @@ static uint32_t lastRxAckSeq = 0;
 // Global variables
 uint16_t screenColor = TFT_DARKGREEN;
 static long lastPacketTime = 0;
+
+gpsData home = {44.89401,-93.47717, 304.42, 0.0 };
 
 #ifdef SENDER
 #define TAG "➡️LoRaMeshSender"
@@ -65,7 +68,9 @@ constexpr float KF_RAD_TO_DEG = 57.295779513082320876f;
 constexpr float EARTH_RADIUS_M = 6371000.0f;
 constexpr float GPS_MEASUREMENT_SIGMA_M = 10.0f;    // Typical consumer GPS noise floor.
 constexpr float MODEL_ACCEL_SIGMA_MPS2 = 4.0f;      // Motion model uncertainty.
-constexpr float OUTLIER_NIS_THRESHOLD = 20.0f;      // High threshold: reject only wild outliers.
+constexpr float OUTLIER_NIS_THRESHOLD = 20.0f;      // Reject only very unlikely jumps.
+constexpr float MAX_FILTER_DT_S = 15.0f;            // TX/ACK cycles can introduce multi-second gaps.
+constexpr float FILTER_RESET_DT_S = 30.0f;          // Re-sync if update gap is very large.
 
 struct Kalman1D {
     float pos = 0.0f;
@@ -197,13 +202,12 @@ void setup() {
 #else
     ESP_LOGI( TAG, "%s", "LoRa Receiverr" );
     //displayMessage("Going Dark", true, screenColor);
-    //M5.Display.setBrightness(1);
+    //M5.Display.setBrightness(25);
 #endif
 } 
 
 void loop() {
     M5.update();
-    //ArduinoOTA.handle();
 
 #ifdef SENDER
     handleSender();
@@ -277,7 +281,7 @@ void handleSender() {
                 ESP_LOGE( TAG, "Error sending location" );
             
             // Update display immediately after sending
-            updateDisplay( location, true);
+            updateDisplay( locationPkt, true);
             lastDisplayUpdate = millis();
         }
     }
@@ -285,7 +289,7 @@ void handleSender() {
 
     // Periodic display update
     if (millis() - lastDisplayUpdate > DISPLAY_UPDATE) {
-        updateDisplay(location, true);
+        updateDisplay(locationPkt, true);
         lastDisplayUpdate = millis();
     }
 }
@@ -321,7 +325,7 @@ int receivePacket() {
     }
 
     if (i == sizeof(loraLocationPacket) ) {
-        loraLocationPacket locationPkt = { 0, 0, { 0.0, 0.0, 0.0, 0.0 } };
+        //loraLocationPacket locationPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0 } };
         memcpy(&locationPkt, msg, i);
         if (locationPkt.type != LORA_PKT_LOCATION) {
             ESP_LOGW(TAG, "Unexpected type %u for location packet size", locationPkt.type);
@@ -359,13 +363,13 @@ bool waitForAck(uint32_t expectedSeq, unsigned long timeoutMs) {
 }
 
 bool sendLocationWithAckRetries(unsigned int maxAttempts) {
-    loraLocationPacket txPacket = { LORA_PKT_LOCATION, ++nextTxSeq, location };
+    locationPkt = { LORA_PKT_LOCATION,  ++nextTxSeq, LoRa.packetSnr(), M5.Power.getBatteryLevel(), location };
     for (unsigned int attempt = 1; attempt <= maxAttempts; ++attempt) {
-        if (!sendPacket((char *)&txPacket, sizeof(txPacket))) {
+        if (!sendPacket((char *)&locationPkt, sizeof(locationPkt))) {
             ESP_LOGE(TAG, "Send attempt %u failed", attempt);
             continue;
         }
-        if (waitForAck(txPacket.seq, ACK_TIMEOUT_MS)) {
+        if (waitForAck(locationPkt.seq, ACK_TIMEOUT_MS)) {
             ESP_LOGI(TAG, "ACK received on attempt %u", attempt);
             M5.Display.setColor(TFT_GREEN);
             M5.Display.fillCircle(20,20,10);
@@ -398,7 +402,7 @@ void handleReceiver() {
         loraStatus newStatus = { LORA_PKT_ACK, lastRxLocationSeq, LoRa.packetSnr(), M5.Power.getBatteryLevel() };
         ESP_LOGI(TAG, "Sending ACK seq: %" PRIu32, newStatus.seq);
         sendPacket( (char*)&newStatus, sizeof(newStatus) );
-        updateDisplay( newLocation, false);
+        updateDisplay( locationPkt, false);
         postToThingsBoard( newLocation );
     }
 
@@ -407,7 +411,7 @@ void handleReceiver() {
         // Check for communication timeout
         if (millis() - lastPacketTime > NO_CONTACT_TIMEOUT )
             newLocation = { 0.0, 0.0, 0.0, 0.0 };
-        updateDisplay( newLocation, false);
+        updateDisplay( locationPkt, false);
         lastDisplayUpdate = millis();
     }
 
@@ -525,8 +529,21 @@ bool acceptGpsMeasurement(const gpsData &raw, gpsData *filtered) {
     gGpsFilter.lastMs = nowMs;
     if (dt <= 0.0f) {
         dt = 0.05f;
-    } else if (dt > 2.0f) {
-        dt = 2.0f;
+    } else if (dt > FILTER_RESET_DT_S) {
+        float eastM = 0.0f;
+        float northM = 0.0f;
+        latLonToLocal(gGpsFilter.frame, raw.latitude, raw.longitude, eastM, northM);
+        initAxis(gGpsFilter.east, eastM);
+        initAxis(gGpsFilter.north, northM);
+        *filtered = raw;
+#ifdef SENDER
+        if (sdLoggingReady) {
+            appendGpsLogRow(raw, raw, raw, newStatus.snr, true, 0.0f);
+        }
+#endif
+        return true;
+    } else if (dt > MAX_FILTER_DT_S) {
+        dt = MAX_FILTER_DT_S;
     }
 
     predictAxis(gGpsFilter.east, dt);

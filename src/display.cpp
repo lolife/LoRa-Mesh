@@ -22,8 +22,9 @@ void centerCursor(const lgfx::GFXfont* font, int size, const char* text) {
                          (M5.Display.height() - textHeight) / 2);
 }
 
-void updateDisplay( gpsData location, bool isSender) {
+void updateDisplay( loraLocationPacket newPkt, bool isSender) {
     static char msg[32];
+    gpsData location = newPkt.location;
 
     M5.Display.clear(screenColor);
     M5.Display.setFont(&FreeSansBold18pt7b);
@@ -38,20 +39,28 @@ void updateDisplay( gpsData location, bool isSender) {
     else {
         if (isSender) {
             snprintf( msg, sizeof( msg ), "%.2f mph", location.speed );
-            M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, (M5.Display.height() - M5.Display.fontHeight()) / 2);
+            M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, (M5.Display.height() - M5.Display.fontHeight()) / 4);
             M5.Display.print( msg );
 
-            snprintf( msg, sizeof( msg ), "Them: %.0f Me: %.0f", newStatus.snr, LoRa.packetSnr() );
-            M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.height()*3/4 );
+            snprintf( msg, sizeof( msg ), "SNR: %.0f / %.0f", newStatus.snr, LoRa.packetSnr() );
+            M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.getCursorY()+M5.Display.fontHeight()+10 );
+            M5.Display.print( msg );
+
+            snprintf( msg, sizeof( msg ), "Batt: %d%% / %d%%", newStatus.batt, M5.Power.getBatteryLevel() );
+            M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.getCursorY()+M5.Display.fontHeight()  );
             M5.Display.print( msg );
         }
         else {
             snprintf( msg, sizeof( msg ), "%.2f mph", location.speed );
-            M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.height()/4 );
+            M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, (M5.Display.height() - M5.Display.fontHeight()) / 4);
             M5.Display.print( msg );
 
-            snprintf( msg, sizeof( msg ), "SNR: %.0f Batt: %d%%", LoRa.packetSnr(), M5.Power.getBatteryLevel() );
-            M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.height()*3/4 );
+            snprintf( msg, sizeof( msg ), "SNR: %.0f / %.0f", newPkt.snr, LoRa.packetSnr() );
+            M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.getCursorY()+M5.Display.fontHeight()+10 );
+            M5.Display.print( msg );
+
+            snprintf( msg, sizeof( msg ), "Batt: %d%% / %d%%", newPkt.batt, M5.Power.getBatteryLevel() );
+            M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.getCursorY()+M5.Display.fontHeight()  );
             M5.Display.print( msg );
         }
     }
