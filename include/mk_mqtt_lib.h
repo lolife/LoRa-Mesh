@@ -1,6 +1,6 @@
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
-#include <WiFi.h>
+
 
 // ThingsBoard Configuration
 #define TB_PORT   1883
@@ -23,12 +23,9 @@ const unsigned long RECONNECT_INTERVAL = 15000; // 15 seconds between retries
 int reconnectFailCount = 0;
 const int MAX_RECONNECT_FAIL = 5; // After 5 failures, wait longer
 
+extern char TAG[36];
+
 void reconnectMqtt() {
-    // Don't try to reconnect if WiFi is not connected
-    if (WiFi.status() != WL_CONNECTED) {
-        return;
-    }
-    
     // Implement exponential backoff
     unsigned long currentInterval = RECONNECT_INTERVAL;
     if (reconnectFailCount > MAX_RECONNECT_FAIL) {
@@ -42,7 +39,7 @@ void reconnectMqtt() {
     
     lastReconnectAttempt = millis();
     
-    Serial.print("Attempting MQTT connection to ThingsBoard...");
+    ESP_LOGI( TAG, "%s", "Attempting MQTT connection to ThingsBoard...");
     
     // Set shorter timeout for connection attempt
     mqttClient.setSocketTimeout(5); // 5 seconds instead of default 15
@@ -50,26 +47,23 @@ void reconnectMqtt() {
     // Attempt to connect with Device Token as Username
     // Use clean session to reduce server-side state
     if (mqttClient.connect(TB_DEVICE_TOKEN, TB_DEVICE_TOKEN, NULL, NULL, 0, 0, NULL, true)) {
-        Serial.println("connected!");
+        ESP_LOGI( TAG, "%s", "connected!" );
         reconnectFailCount = 0; // Reset failure counter
         
         // --- SUBSCRIPTIONS ---
         // Subscribe to RPC commands
         mqttClient.subscribe(RPC_SUBSCRIBE_TOPIC);
-        Serial.print("Subscribed to RPC topic: ");
-        Serial.println(RPC_SUBSCRIBE_TOPIC);
+        ESP_LOGI( TAG, "Subscribed to RPC topic: %s", RPC_SUBSCRIBE_TOPIC );
         
         // Optional: Subscribe to shared attribute updates
         mqttClient.subscribe(ATTRIBUTES_TOPIC); 
     } else {
-        Serial.print("failed, rc=");
-        Serial.print(mqttClient.state());
-        Serial.println(" will retry");
+        ESP_LOGE( TAG, "failed, rc=%d, will retry", mqttClient.state());
         reconnectFailCount++;
         
         // If too many failures, consider WiFi issue
         if (reconnectFailCount > MAX_RECONNECT_FAIL * 2) {
-            Serial.println("Too many MQTT failures, checking WiFi...");
+            ESP_LOGE( TAG, "%s", "Too many MQTT failures, checking WiFi...");
             if (WiFi.status() != WL_CONNECTED) {
                 WiFi.reconnect();
             }
@@ -87,14 +81,12 @@ void mqttLoop() {
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    Serial.print("Message received on topic: ");
-    Serial.println(topic);
+    ESP_LOGI( TAG, "Message received on topic: %s", topic );
     
     // Convert payload bytes to a null-terminated String for JSON parsing
     char payload_str[length + 1];
     memcpy(payload_str, payload, length);
     payload_str[length] = '\0';
-    Serial.println(payload_str);
     
     // Check if the message is an RPC command topic
     if (strstr(topic, "v1/devices/me/rpc/request/")) {
@@ -110,8 +102,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         DeserializationError error = deserializeJson(doc, payload_str, length);
         
         if (error) {
-            Serial.print("JSON parse error: ");
-            Serial.println(error.c_str());
+            ESP_LOGE( TAG, "JSON parse error: %s", error.c_str() );
             return;
         }
         
@@ -144,7 +135,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         bool success = mqttClient.publish(responseTopic.c_str(), responseValue.c_str());
         
         if (!success) {
-            Serial.println("Failed to publish RPC response");
+            ESP_LOGE( TAG, "%s", "Failed to publish RPC response" );
         }
     } 
 }
@@ -153,7 +144,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 void mqttDisconnect() {
     if (mqttClient.connected()) {
         mqttClient.disconnect();
-        Serial.println("MQTT disconnected gracefully");
+        ESP_LOGI( TAG, "%s", "MQTT disconnected gracefully" );
     }
 }
 

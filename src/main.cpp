@@ -1,175 +1,4 @@
-#include <M5Unified.h>
-#include <M5GFX.h>
-#include <SPI.h>
-#include <ArduinoOTA.h>
-#include <SD.h>
-#include "esp_log.h"
-#include "M5_SX127X.h"
-#include <inttypes.h>
-#include "lora_config.h"
-#include "display.h"
-#include "credentials.h"
-#include "mk_mqtt_lib.h"
-#include <math.h>
-
-gpsData location     = { 0.0, 0.0, 0.0, 0.0 };
-gpsData newLocation  = { 0.0, 0.0, 0.0, 0.0 };
-loraStatus newStatus = { 0, 0, 0.0, 0 };
-loraLocationPacket locationPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0 } };
-
-static uint32_t nextTxSeq = 0;
-static uint32_t lastRxLocationSeq = 0;
-static uint32_t lastRxAckSeq = 0;
-
-// Global variables
-uint16_t screenColor = TFT_DARKGREEN;
-static long lastPacketTime = 0;
-
-gpsData home = {44.89401,-93.47717, 304.42, 0.0 };
-
-#ifdef SENDER
-#define TAG "➡️LoRaMeshSender"
-    #include <TinyGPSPlus.h>
-    TinyGPSPlus gps;
-    static const uint32_t GPSBaud = 115200;
-    static const int RXPin = 18, TXPin = 17;
-#else
-    #define TAG "⬅️LoRaMeshReceiver"
-#endif
-
-// Function prototypes
-void setupLoRa();
-void handleSender();
-void handleReceiver();
-static void smartDelay(unsigned long ms);
-void postToThingsBoard(gpsData newData);
-bool initializeWiFi();
-bool nearlyZero( double valueToCheck );
-bool locationInBounds( gpsData newLocation );
-bool sendPacket( char *payload, int packetSize );
-int receivePacket();
-bool waitForAck(uint32_t expectedSeq, unsigned long timeoutMs);
-bool sendLocationWithAckRetries(unsigned int maxAttempts);
-void serviceBackgroundTasks();
-bool acceptGpsMeasurement(const gpsData &raw, gpsData *filtered);
-#ifdef SENDER
-bool initSdLogging();
-void appendGpsLogRow(const gpsData &predicted,
-                     const gpsData &actual,
-                     const gpsData &filtered,
-                     float snr,
-                     bool accepted,
-                     float nis);
-#endif
-
-namespace {
-constexpr float KF_DEG_TO_RAD = 0.01745329251994329577f;
-constexpr float KF_RAD_TO_DEG = 57.295779513082320876f;
-constexpr float EARTH_RADIUS_M = 6371000.0f;
-constexpr float GPS_MEASUREMENT_SIGMA_M = 10.0f;    // Typical consumer GPS noise floor.
-constexpr float MODEL_ACCEL_SIGMA_MPS2 = 4.0f;      // Motion model uncertainty.
-constexpr float OUTLIER_NIS_THRESHOLD = 20.0f;      // Reject only very unlikely jumps.
-constexpr float MAX_FILTER_DT_S = 15.0f;            // TX/ACK cycles can introduce multi-second gaps.
-constexpr float FILTER_RESET_DT_S = 30.0f;          // Re-sync if update gap is very large.
-
-struct Kalman1D {
-    float pos = 0.0f;
-    float vel = 0.0f;
-    float p00 = 0.0f;
-    float p01 = 0.0f;
-    float p10 = 0.0f;
-    float p11 = 0.0f;
-};
-
-struct LocalFrame {
-    bool initialized = false;
-    float refLatRad = 0.0f;
-    float refLonRad = 0.0f;
-    float cosRefLat = 1.0f;
-};
-
-struct GpsKalmanFilter {
-    bool initialized = false;
-    uint32_t lastMs = 0;
-    Kalman1D east;
-    Kalman1D north;
-    LocalFrame frame;
-};
-
-GpsKalmanFilter gGpsFilter;
-
-#ifdef SENDER
-constexpr int SD_SPI_CS = 4;
-constexpr const char *GPS_LOG_FILE = "/gps_kalman_log.csv";
-bool sdLoggingReady = false;
-#endif
-
-void initAxis(Kalman1D &axis, float initialPos) {
-    axis.pos = initialPos;
-    axis.vel = 0.0f;
-    axis.p00 = 25.0f;   // Position variance (m^2)
-    axis.p01 = 0.0f;
-    axis.p10 = 0.0f;
-    axis.p11 = 100.0f;  // Velocity variance (m^2/s^2)
-}
-
-void predictAxis(Kalman1D &axis, float dt) {
-    axis.pos += axis.vel * dt;
-
-    const float oldP00 = axis.p00;
-    const float oldP01 = axis.p01;
-    const float oldP10 = axis.p10;
-    const float oldP11 = axis.p11;
-
-    const float dt2 = dt * dt;
-    const float dt3 = dt2 * dt;
-    const float dt4 = dt2 * dt2;
-    const float accelVar = MODEL_ACCEL_SIGMA_MPS2 * MODEL_ACCEL_SIGMA_MPS2;
-
-    const float q00 = 0.25f * dt4 * accelVar;
-    const float q01 = 0.5f * dt3 * accelVar;
-    const float q11 = dt2 * accelVar;
-
-    axis.p00 = oldP00 + dt * (oldP01 + oldP10) + dt2 * oldP11 + q00;
-    axis.p01 = oldP01 + dt * oldP11 + q01;
-    axis.p10 = oldP10 + dt * oldP11 + q01;
-    axis.p11 = oldP11 + q11;
-}
-
-float updateAxis(Kalman1D &axis, float measurement, float measurementVar) {
-    const float innovation = measurement - axis.pos;
-    const float s = axis.p00 + measurementVar;
-    const float k0 = axis.p00 / s;
-    const float k1 = axis.p10 / s;
-
-    const float oldP00 = axis.p00;
-    const float oldP01 = axis.p01;
-
-    axis.pos += k0 * innovation;
-    axis.vel += k1 * innovation;
-
-    axis.p00 = axis.p00 - (k0 * oldP00);
-    axis.p01 = axis.p01 - (k0 * oldP01);
-    axis.p10 = axis.p10 - (k1 * oldP00);
-    axis.p11 = axis.p11 - (k1 * oldP01);
-
-    return (innovation * innovation) / s;
-}
-
-void latLonToLocal(const LocalFrame &frame, float latDeg, float lonDeg, float &eastM, float &northM) {
-    const float latRad = latDeg * KF_DEG_TO_RAD;
-    const float lonRad = lonDeg * KF_DEG_TO_RAD;
-    eastM = (lonRad - frame.refLonRad) * frame.cosRefLat * EARTH_RADIUS_M;
-    northM = (latRad - frame.refLatRad) * EARTH_RADIUS_M;
-}
-
-void localToLatLon(const LocalFrame &frame, float eastM, float northM, float &latDeg, float &lonDeg) {
-    const float latRad = frame.refLatRad + (northM / EARTH_RADIUS_M);
-    const float lonRad = frame.refLonRad + (eastM / (EARTH_RADIUS_M * frame.cosRefLat));
-    latDeg = latRad * KF_RAD_TO_DEG;
-    lonDeg = lonRad * KF_RAD_TO_DEG;
-}
-}
+#include "main.h"
 
 void setup() {
     //Serial.begin( 115200 );
@@ -192,14 +21,21 @@ void setup() {
     // Display initial mode
     initializeWiFi();
     mqttClient.setCallback(mqttCallback);
+    if (!initESPNow())
+        displayMessage("ESP-NOW init failed", true, screenColor );
+
 #ifdef SENDER
+    snprintf( TAG, sizeof(TAG), "➡️LoRaMeshSender" ); 
     screenColor = TFT_NAVY;
     //M5.Display.setRotation(0);
-    Serial1.begin( GPSBaud, SERIAL_8N1, RXPin, TXPin );
-    sdLoggingReady = initSdLogging();
+    GPS_SERIAL_PORT.begin( GPSBaud, SERIAL_8N1, RXPin, TXPin );
+    //GPS_SERIAL_PORT.begin( GPSBaud );
+    //sdLoggingReady = initSdLogging();
+    
     ESP_LOGI( TAG, "%s", "LoRa Sender" );
     displayMessage("LoRa Sender", true, screenColor);
 #else
+    snprintf( TAG, sizeof(TAG), "⬅️LoRaMeshReceive" ); 
     ESP_LOGI( TAG, "%s", "LoRa Receiverr" );
     //displayMessage("Going Dark", true, screenColor);
     //M5.Display.setBrightness(25);
@@ -273,25 +109,35 @@ void handleSender() {
                      rawLocation.latitude, rawLocation.longitude);
         }
 
-        // Send packet at regular intervals
-        if (millis() - lastPacketTime > PACKET_INTERVAL) {
-            lastPacketTime = millis();
 
-            if( !sendLocationWithAckRetries(ACK_RETRY_COUNT) )
-                ESP_LOGE( TAG, "Error sending location" );
-            
-            // Update display immediately after sending
-            updateDisplay( locationPkt, true);
-            lastDisplayUpdate = millis();
-        }
     }
 #endif
+
+    // Send packet at regular intervals
+    if (millis() - lastPacketTime > PACKET_INTERVAL) {
+        lastPacketTime = millis();
+
+        if( !sendLocationWithAckRetries(ACK_RETRY_COUNT) )
+            ESP_LOGE( TAG, "Error sending location" );
+        
+        // Update display immediately after sending
+        updateDisplay( locationPkt, true);
+        lastDisplayUpdate = millis();
+    }
 
     // Periodic display update
     if (millis() - lastDisplayUpdate > DISPLAY_UPDATE) {
         updateDisplay(locationPkt, true);
         lastDisplayUpdate = millis();
     }
+
+    // static unsigned int lastStatus = 0;
+    // if(millis() - lastStatus > 10000) { 
+    //     ESP_LOGI( TAG, "%s", "Posting to ESP" );
+    //     msg = { "S", 1.0};
+    //     sendStatus(msg); // Send our data out to the ESP-NOW network
+    //     lastStatus = millis();
+    // }
 }
 
 int receivePacket() {
@@ -383,11 +229,15 @@ bool sendLocationWithAckRetries(unsigned int maxAttempts) {
 }
 
 void serviceBackgroundTasks() {
-    M5.update();
+    //M5.update();
     ArduinoOTA.handle();
 #ifdef SENDER
-    while (Serial1.available()) {
-        gps.encode(Serial1.read());
+    while (GPS_SERIAL_PORT.available()) {
+        gps.encode( GPS_SERIAL_PORT.read() );
+
+        // auto myByte = GPS_SERIAL_PORT.read();
+        // gps.encode( myByte);
+        // ESP_LOGD(TAG, "%d", myByte );
     }
 #endif
 }
@@ -396,21 +246,25 @@ void serviceBackgroundTasks() {
 void handleReceiver() {
     static long lastDisplayUpdate = millis();
 
-
     int packetType = receivePacket();
     if( packetType == 1 ) { // got new location
         loraStatus newStatus = { LORA_PKT_ACK, lastRxLocationSeq, LoRa.packetSnr(), M5.Power.getBatteryLevel() };
         ESP_LOGI(TAG, "Sending ACK seq: %" PRIu32, newStatus.seq);
         sendPacket( (char*)&newStatus, sizeof(newStatus) );
         updateDisplay( locationPkt, false);
-        postToThingsBoard( newLocation );
+        postToThingsBoard( locationPkt );
+        ESP_LOGI( TAG, "%s", "Posting to ESP" );
+        msg = { "V", locationPkt.location.speed };
+        sendStatus(msg); // Send our data out to the ESP-NOW network
     }
 
     // Periodic display update and timeout check
-    if (millis() - lastDisplayUpdate > DISPLAY_UPDATE) {
+    if (millis() - lastDisplayUpdate > PACKET_INTERVAL) {
         // Check for communication timeout
-        if (millis() - lastPacketTime > NO_CONTACT_TIMEOUT )
+        if (millis() - lastPacketTime > NO_CONTACT_TIMEOUT ) {
             newLocation = { 0.0, 0.0, 0.0, 0.0 };
+            locationPkt.location = newLocation;
+        }
         updateDisplay( locationPkt, false);
         lastDisplayUpdate = millis();
     }
@@ -423,9 +277,11 @@ void handleReceiver() {
     }
 }
 
-void postToThingsBoard(gpsData newData) {
+void postToThingsBoard(loraLocationPacket newPkt) {
     unsigned char payload[TELEMETRY_DOC_SIZE];
     JsonDocument doc;
+
+    gpsData newData = newPkt.location;
 
 const double EPSILON = 1e-9;  // or whatever tolerance makes sense for your use case
 
@@ -433,9 +289,9 @@ const double EPSILON = 1e-9;  // or whatever tolerance makes sense for your use 
             nearlyZero(newData.longitude) || newData.longitude > 180.0 || newData.longitude < -180.0 )
         return;
 
-    ESP_LOGV( TAG, "Considerintg posting %.1f", newData.speed );
-    if( newData.speed < 0.25 )
-        return;
+//    ESP_LOGV( TAG, "Considerintg posting %.1f", newData.speed );
+//    if( newData.speed < 0.1 )
+//        return;
     ESP_LOGI( TAG, "%s", "Posting" );
 
     doc["latitude"] = newData.latitude;
@@ -444,6 +300,7 @@ const double EPSILON = 1e-9;  // or whatever tolerance makes sense for your use 
     doc["speed"] = newData.speed;
     //doc["ip_address"] = WiFi.localIP().toString().c_str();
     doc["pkt_rssi"] = LoRa.packetSnr();
+    //doc["range"] = newPkt.lastRange;
 
     // Serialize the JSON object
     size_t n = serializeJson(doc, payload);
@@ -646,3 +503,91 @@ void appendGpsLogRow(const gpsData &predicted,
     logFile.close();
 }
 #endif
+
+bool initESPNow() {
+    if (esp_now_init() != ESP_OK) {
+        ESP_LOGI( TAG, "ESP-NOW init failed");
+        return false;
+    }
+
+#if defined(ARDUINO_M5STACK_NANO)
+    // Keep radio fully awake on NanoC6 to improve ESP-NOW RX reliability.
+    esp_wifi_set_ps(WIFI_PS_NONE);
+#endif
+    
+    // Register callbacks
+    esp_now_register_send_cb(onDataSent);
+    esp_now_register_recv_cb(onDataRecv);
+    
+    for(int i = 0; i < NUM_PEERS; ++i) {
+        peers[i].lastHeard = millis();
+        addESPPeer(peers[i]);
+    }
+    return true;
+}
+
+void initAxis(Kalman1D &axis, float initialPos) {
+    axis.pos = initialPos;
+    axis.vel = 0.0f;
+    axis.p00 = 25.0f;   // Position variance (m^2)
+    axis.p01 = 0.0f;
+    axis.p10 = 0.0f;
+    axis.p11 = 100.0f;  // Velocity variance (m^2/s^2)
+}
+
+void predictAxis(Kalman1D &axis, float dt) {
+    axis.pos += axis.vel * dt;
+
+    const float oldP00 = axis.p00;
+    const float oldP01 = axis.p01;
+    const float oldP10 = axis.p10;
+    const float oldP11 = axis.p11;
+
+    const float dt2 = dt * dt;
+    const float dt3 = dt2 * dt;
+    const float dt4 = dt2 * dt2;
+    const float accelVar = MODEL_ACCEL_SIGMA_MPS2 * MODEL_ACCEL_SIGMA_MPS2;
+
+    const float q00 = 0.25f * dt4 * accelVar;
+    const float q01 = 0.5f * dt3 * accelVar;
+    const float q11 = dt2 * accelVar;
+
+    axis.p00 = oldP00 + dt * (oldP01 + oldP10) + dt2 * oldP11 + q00;
+    axis.p01 = oldP01 + dt * oldP11 + q01;
+    axis.p10 = oldP10 + dt * oldP11 + q01;
+    axis.p11 = oldP11 + q11;
+}
+
+float updateAxis(Kalman1D &axis, float measurement, float measurementVar) {
+    const float innovation = measurement - axis.pos;
+    const float s = axis.p00 + measurementVar;
+    const float k0 = axis.p00 / s;
+    const float k1 = axis.p10 / s;
+
+    const float oldP00 = axis.p00;
+    const float oldP01 = axis.p01;
+
+    axis.pos += k0 * innovation;
+    axis.vel += k1 * innovation;
+
+    axis.p00 = axis.p00 - (k0 * oldP00);
+    axis.p01 = axis.p01 - (k0 * oldP01);
+    axis.p10 = axis.p10 - (k1 * oldP00);
+    axis.p11 = axis.p11 - (k1 * oldP01);
+
+    return (innovation * innovation) / s;
+}
+
+void latLonToLocal(const LocalFrame &frame, float latDeg, float lonDeg, float &eastM, float &northM) {
+    const float latRad = latDeg * KF_DEG_TO_RAD;
+    const float lonRad = lonDeg * KF_DEG_TO_RAD;
+    eastM = (lonRad - frame.refLonRad) * frame.cosRefLat * EARTH_RADIUS_M;
+    northM = (latRad - frame.refLatRad) * EARTH_RADIUS_M;
+}
+
+void localToLatLon(const LocalFrame &frame, float eastM, float northM, float &latDeg, float &lonDeg) {
+    const float latRad = frame.refLatRad + (northM / EARTH_RADIUS_M);
+    const float lonRad = frame.refLonRad + (eastM / (EARTH_RADIUS_M * frame.cosRefLat));
+    latDeg = latRad * KF_RAD_TO_DEG;
+    lonDeg = lonRad * KF_RAD_TO_DEG;
+}

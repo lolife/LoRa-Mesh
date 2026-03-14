@@ -4,10 +4,17 @@
 #define MAX_MSG_SIZE 64
 
 // Module Connection Pins
-//#ifdef SENDER
-#define CS_PIN  6
-#define RST_PIN 5
-#define IRQ_PIN 10
+
+#ifdef ARDUINO_M5STACK_BASIC
+    #define CS_PIN  5
+    #define RST_PIN 25
+    #define IRQ_PIN 34
+#elifdef ARDUINO_M5STACK_CORES3
+    #define CS_PIN  6
+    #define RST_PIN 5
+    #define IRQ_PIN 10
+#endif
+
 // #else
 // #define CS_PIN  5
 // #define RST_PIN 25
@@ -27,8 +34,8 @@
 #define LORA_SYNC_WORD 0x2D
 
 // Timing constants
-#define PACKET_INTERVAL 5000     // Send packet every n seconds (sender)
-#define DISPLAY_UPDATE 3000      // Update display every n seconds
+#define PACKET_INTERVAL 15000     // Send packet every n seconds (sender)
+#define DISPLAY_UPDATE 1500      // Update display every n seconds
 #define NO_CONTACT_TIMEOUT 60000 // Show "No contact" after n seconds
 #define LOOP_DELAY 100           // Main loop delay
 #define ACK_TIMEOUT_MS 2500
