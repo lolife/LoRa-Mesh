@@ -9,7 +9,7 @@
     #define CS_PIN  5
     #define RST_PIN 25
     #define IRQ_PIN 34
-#elifdef ARDUINO_M5STACK_CORES3
+#elif defined(ARDUINO_M5STACK_CORES3)
     #define CS_PIN  6
     #define RST_PIN 5
     #define IRQ_PIN 10
@@ -110,4 +110,3 @@ int receivePacket() {
     }
     return packetSize;
 }
-

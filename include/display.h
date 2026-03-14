@@ -1,47 +1,6 @@
 #pragma once
 #include <M5Unified.h>
-#include <cstdint>
-
-#pragma pack(push, 1) // Force alignment to 1 byte (no padding)
-struct gpsData {
-    float latitude;
-    float longitude;
-    float altitude;
-    float speed;
-};
-
-struct envData {
-    float temperature;
-    float humidity;
-    float pressure;
-    float gas_resistance;
-    int iaq;
-    int iaq_q;
-};
-
-struct loraStatus {
-    uint8_t type;
-    uint32_t seq;
-    float snr;
-    int32_t batt;
-};
-
-struct loraDataPacket {
-    uint8_t type;
-    uint32_t seq;
-    float snr;
-    int32_t batt;
-    gpsData location;
-};
-
-#pragma pack(pop) // Restore default alignment
-
-static constexpr uint8_t LORA_PKT_LOCATION = 0x01;
-static constexpr uint8_t LORA_PKT_ACK      = 0x02;
-
-static_assert(sizeof(gpsData) == 16, "gpsData size changed");
-static_assert(sizeof(loraStatus) == 13, "loraStatus size changed");
-static_assert(sizeof(loraDataPacket) == 29, "loraDataPacket size changed");
+#include "lora_protocol.h"
 
 /**
  * Display a centered message on the screen
@@ -64,7 +23,4 @@ void centerCursor(const lgfx::GFXfont* font, int size, const char* text);
  * @param screenColor Current screen color in RGB565 format
  * @param isSender True if sender, false if receiver
  */
-void updateDisplay( loraDataPacket newPkt, bool isSender);
-
-bool nearlyZero( double valueToCheck );
-bool locationInBounds( gpsData newLocation );
+void updateDisplay(loraGpsPacket newPkt, bool isSender);

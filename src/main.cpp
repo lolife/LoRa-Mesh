@@ -5,6 +5,7 @@ extern char    loraMessage[MAX_MSG_SIZE];
 void setup() {
     //Serial.begin( 115200 );
     // Initialize M5Stack with proper configuration
+    ESP_LOGI(TAG, "FW %s %s", __DATE__, __TIME__);
     auto cfg = M5.config();
     cfg.clear_display = true;
     cfg.internal_imu = false;  // Disable IMU to avoid ADC conflict
@@ -32,7 +33,13 @@ void setup() {
     screenColor = TFT_NAVY;
     //M5.Display.setRotation(0);
     GPS_SERIAL_PORT.begin( GPSBaud, SERIAL_8N1, RXPin, TXPin );
-    //GPS_SERIAL_PORT.begin( GPSBaud );
+    ESP_LOGI(TAG, "GPS UART pins rx=%d tx=%d baud=%" PRIu32, RXPin, TXPin, GPSBaud);
+    if (RXPin == LORA_SCLK || RXPin == LORA_MISO || RXPin == LORA_MOSI ||
+        TXPin == LORA_SCLK || TXPin == LORA_MISO || TXPin == LORA_MOSI) {
+        ESP_LOGE(TAG, "GPS UART pin conflicts with LoRa SPI pins (SCLK=%d MISO=%d MOSI=%d)",
+                 LORA_SCLK, LORA_MISO, LORA_MOSI);
+        displayMessage("GPS/LoRa pin conflict", true, TFT_RED);
+    }
     //sdLoggingReady = initSdLogging();
     
     ESP_LOGI( TAG, "%s", "LoRa Sender" );
@@ -58,31 +65,48 @@ void loop() {
 }
 
 void handleSender() {
-    static long lastPacketTime = millis();
+    static long lastTxPacketTime = millis();
     static long lastDisplayUpdate = millis();
+    static unsigned long lastGpsDiag = 0;
 #ifdef SENDER
-    if (gps.location.isValid() && gps.location.isUpdated()) {
+//    if (gps.location.isValid() && gps.location.isUpdated()) {
+    if ( gps.location.isValid() ) {
         gpsData rawLocation = {
             (float)gps.location.lat(),
             (float)gps.location.lng(),
             (float)gps.altitude.meters(),
-            (float)gps.speed.mph()
+            (float)gps.speed.mph(),
+            (int)gps.satellites.value()
         };
         gpsData filteredLocation = rawLocation;
+        ESP_LOGV( TAG, "speed is %.2f", rawLocation.speed );
 
         if (acceptGpsMeasurement(rawLocation, &filteredLocation)) {
             location = filteredLocation;
+            locationPkt.payload = location;
         } else {
             ESP_LOGW(TAG, "Rejected implausible GPS point: %.6f, %.6f",
                      rawLocation.latitude, rawLocation.longitude);
         }
     }
+
+    if (millis() - lastGpsDiag > 30000) {
+        lastGpsDiag = millis();
+        ESP_LOGI(TAG, "GPS diag: chars=%" PRIu32 " sats=%u valid=%d updated=%d",
+                 gps.charsProcessed(),
+                 gps.satellites.isValid() ? gps.satellites.value() : 0,
+                 gps.location.isValid(),
+                 gps.location.isUpdated());
+        if (gps.charsProcessed() < 10) {
+            ESP_LOGW(TAG, "No NMEA stream detected on GPS UART; check wiring/pins/baud");
+        }
+    }
 #endif
     // Send packet at regular intervals
-    if (millis() - lastPacketTime > PACKET_INTERVAL) {
-        lastPacketTime = millis();
+    if (millis() - lastTxPacketTime > PACKET_INTERVAL) {
+        lastTxPacketTime = millis();
 
-        if( !sendLocationWithAckRetries(ACK_RETRY_COUNT) )
+        if( !sendDataWithAckRetries(ACK_RETRY_COUNT) )
             ESP_LOGE( TAG, "Error sending location" );
         
         // Update display immediately after sending
@@ -102,51 +126,85 @@ int handlePacket() {
     if( packetSize < 1 )
         return 0;
 
-    if (packetSize == sizeof(loraDataPacket) ) {
-        //loraDataPacket locationPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0 } };
-        memcpy(&locationPkt, &loraMessage, packetSize );
-        if (locationPkt.type != LORA_PKT_LOCATION) {
-            ESP_LOGW(TAG, "Unexpected type %u for location packet size", locationPkt.type);
+    const uint8_t packetType = static_cast<uint8_t>(loraMessage[0]);
+
+    if (packetType == LORA_PKT_LOCATION) {
+        if (!decodeLoraGpsPacket(loraMessage, packetSize, &locationPkt)) {
+            ESP_LOGW(TAG, "Unexpected size %d for GPS packet", packetSize);
             return 0;
         }
-        lastRxLocationSeq = locationPkt.seq;
-        newLocation = locationPkt.location;
-        ESP_LOGV( TAG, "Got msg: %.8f", newLocation.speed );
+        lastPacketTime = millis();
+        lastRxDataSeq = locationPkt.seq;
+        newLocation = locationPkt.payload;
+        ESP_LOGI( TAG, "Got msg: %.8f", newLocation.speed );
         return 1;
     }
-    else if (packetSize == sizeof(loraStatus) ) {
-        //loraStatus newStatus = { 0, 0, 0.0, 0 };
-        memcpy( &newStatus, &loraMessage, packetSize );
-        ESP_LOGI( TAG, "SNR = %.1f", newStatus.snr );
-        if (newStatus.type != LORA_PKT_ACK) {
-            ESP_LOGW(TAG, "Unexpected type %u for ACK packet size", newStatus.type);
+    else if (packetType == LORA_PKT_ENV) {
+        loraEnvPacket envPkt;
+        if (!decodeLoraEnvPacket(loraMessage, packetSize, &envPkt)) {
+            ESP_LOGW(TAG, "Unexpected size %d for ENV packet", packetSize);
             return 0;
         }
+        lastPacketTime = millis();
+        lastRxDataSeq = envPkt.seq;
+        latestEnv = envPkt.payload;
+        ESP_LOGI(TAG, "Received ENV payload: temp=%.2fC humidity=%.2f%%",
+                 latestEnv.temperature, latestEnv.humidity);
+        return 3;
+    }
+    else if (packetType == LORA_PKT_ACK) {
+        if (!decodeLoraStatusPacket(loraMessage, packetSize, &newStatus)) {
+            ESP_LOGW(TAG, "Unexpected size %d for ACK packet", packetSize);
+            return 0;
+        }
+        ESP_LOGV( TAG, "SNR = %.1f", newStatus.snr );
         lastRxAckSeq = newStatus.seq;
         return 2;
    }
-   ESP_LOGW(TAG, "Ignoring packet with unexpected size: %d", packetSize );
+   ESP_LOGW(TAG, "Ignoring packet with unknown type %u and size %d", packetType, packetSize );
    return 0;
 }
 bool waitForAck(uint32_t expectedSeq, unsigned long timeoutMs) {
     unsigned long start = millis();
     while (millis() - start < timeoutMs) {
         serviceBackgroundTasks();
-        if (receivePacket() == 2 && lastRxAckSeq == expectedSeq)
-            return true;
+        const int packetType = handlePacket();
+        if (packetType == 2) {
+            if (lastRxAckSeq == expectedSeq) {
+                ESP_LOGV(TAG, "ACK matched expected seq: %" PRIu32, expectedSeq);
+                return true;
+            }
+            ESP_LOGW(TAG, "ACK seq mismatch: expected=%" PRIu32 " got=%" PRIu32,
+                     expectedSeq, lastRxAckSeq);
+        }
         delay(5);
     }
     return false;
 }
 
-bool sendLocationWithAckRetries(unsigned int maxAttempts) {
-    locationPkt = { LORA_PKT_LOCATION,  ++nextTxSeq, LoRa.packetSnr(), M5.Power.getBatteryLevel(), location };
+loraTxPayload buildTxPayload() {
+#if LORA_TX_PAYLOAD_KIND == LORA_PAYLOAD_KIND_GPS
+    return location;
+#elif LORA_TX_PAYLOAD_KIND == LORA_PAYLOAD_KIND_ENV
+    return latestEnv;
+#else
+#error Unsupported LORA_TX_PAYLOAD_KIND
+#endif
+}
+
+bool sendDataWithAckRetries(unsigned int maxAttempts) {
+    txPkt = makeLoraDataPacket<loraTxPayload>(
+        ++nextTxSeq,
+        LoRa.packetSnr(),
+        M5.Power.getBatteryLevel(),
+        buildTxPayload());
+    ESP_LOGI(TAG, "Sending packet type=%u seq=%" PRIu32, txPkt.type, txPkt.seq);
     for (unsigned int attempt = 1; attempt <= maxAttempts; ++attempt) {
-        if (!sendPacket((char *)&locationPkt, sizeof(locationPkt))) {
+        if (!sendPacket((char *)&txPkt, sizeof(txPkt))) {
             ESP_LOGE(TAG, "Send attempt %u failed", attempt);
             continue;
         }
-        if (waitForAck(locationPkt.seq, ACK_TIMEOUT_MS)) {
+        if (waitForAck(txPkt.seq, ACK_TIMEOUT_MS)) {
             ESP_LOGI(TAG, "ACK received on attempt %u", attempt);
             M5.Display.setColor(TFT_GREEN);
             M5.Display.fillCircle(20,20,10);
@@ -178,14 +236,17 @@ void handleReceiver() {
     static long lastDisplayUpdate = millis();
 
     int packetType = handlePacket();
-    if( packetType == 1 ) { // got new location
-        loraStatus newStatus = { LORA_PKT_ACK, lastRxLocationSeq, LoRa.packetSnr(), M5.Power.getBatteryLevel() };
+    if (packetType == 1 || packetType == 3) {
+        loraStatus newStatus = { LORA_PKT_ACK, lastRxDataSeq, LoRa.packetSnr(), M5.Power.getBatteryLevel() };
         ESP_LOGI(TAG, "Sending ACK seq: %" PRIu32, newStatus.seq);
         sendPacket( (char*)&newStatus, sizeof(newStatus) );
+    }
+
+    if( packetType == 1 ) { // got new location
         updateDisplay( locationPkt, false);
         postToThingsBoard( locationPkt );
         ESP_LOGI( TAG, "%s", "Posting to ESP" );
-        msg = { "V", locationPkt.location.speed };
+        msg = { "V", locationPkt.payload.speed };
         sendStatus(msg); // Send our data out to the ESP-NOW network
     }
 
@@ -194,7 +255,7 @@ void handleReceiver() {
         // Check for communication timeout
         if (millis() - lastPacketTime > NO_CONTACT_TIMEOUT ) {
             newLocation = { 0.0, 0.0, 0.0, 0.0 };
-            locationPkt.location = newLocation;
+            locationPkt.payload = newLocation;
         }
         updateDisplay( locationPkt, false);
         lastDisplayUpdate = millis();
@@ -208,13 +269,11 @@ void handleReceiver() {
     }
 }
 
-void postToThingsBoard(loraDataPacket newPkt) {
+void postToThingsBoard(loraGpsPacket newPkt) {
     unsigned char payload[TELEMETRY_DOC_SIZE];
     JsonDocument doc;
 
-    gpsData newData = newPkt.location;
-
-const double EPSILON = 1e-9;  // or whatever tolerance makes sense for your use case
+    gpsData newData = newPkt.payload;
 
     if( nearlyZero(newData.latitude) || newData.latitude > 90.0 || newData.latitude < -90.0 ||
             nearlyZero(newData.longitude) || newData.longitude > 180.0 || newData.longitude < -180.0 )
@@ -285,156 +344,6 @@ static void smartDelay(unsigned long ms) {
   } while (millis() - start < ms);
 } 
 
-bool acceptGpsMeasurement(const gpsData &raw, gpsData *filtered) {
-    if (!locationInBounds(raw)) {
-        return false;
-    }
-
-    if (!gGpsFilter.initialized) {
-        gGpsFilter.frame.initialized = true;
-        gGpsFilter.frame.refLatRad = raw.latitude * KF_DEG_TO_RAD;
-        gGpsFilter.frame.refLonRad = raw.longitude * KF_DEG_TO_RAD;
-        gGpsFilter.frame.cosRefLat = cosf(gGpsFilter.frame.refLatRad);
-        if (fabsf(gGpsFilter.frame.cosRefLat) < 0.01f) {
-            gGpsFilter.frame.cosRefLat = 0.01f;
-        }
-
-        initAxis(gGpsFilter.east, 0.0f);
-        initAxis(gGpsFilter.north, 0.0f);
-        gGpsFilter.lastMs = millis();
-        gGpsFilter.initialized = true;
-        *filtered = raw;
-#ifdef SENDER
-        if (sdLoggingReady) {
-            appendGpsLogRow(raw, raw, raw, newStatus.snr, true, 0.0f);
-        }
-#endif
-        return true;
-    }
-
-    const uint32_t nowMs = millis();
-    float dt = (nowMs - gGpsFilter.lastMs) / 1000.0f;
-    gGpsFilter.lastMs = nowMs;
-    if (dt <= 0.0f) {
-        dt = 0.05f;
-    } else if (dt > FILTER_RESET_DT_S) {
-        float eastM = 0.0f;
-        float northM = 0.0f;
-        latLonToLocal(gGpsFilter.frame, raw.latitude, raw.longitude, eastM, northM);
-        initAxis(gGpsFilter.east, eastM);
-        initAxis(gGpsFilter.north, northM);
-        *filtered = raw;
-#ifdef SENDER
-        if (sdLoggingReady) {
-            appendGpsLogRow(raw, raw, raw, newStatus.snr, true, 0.0f);
-        }
-#endif
-        return true;
-    } else if (dt > MAX_FILTER_DT_S) {
-        dt = MAX_FILTER_DT_S;
-    }
-
-    predictAxis(gGpsFilter.east, dt);
-    predictAxis(gGpsFilter.north, dt);
-
-    float measuredEast = 0.0f;
-    float measuredNorth = 0.0f;
-    latLonToLocal(gGpsFilter.frame, raw.latitude, raw.longitude, measuredEast, measuredNorth);
-
-    const float measurementVar = GPS_MEASUREMENT_SIGMA_M * GPS_MEASUREMENT_SIGMA_M;
-    float predictedLat = raw.latitude;
-    float predictedLon = raw.longitude;
-    localToLatLon(gGpsFilter.frame, gGpsFilter.east.pos, gGpsFilter.north.pos, predictedLat, predictedLon);
-    gpsData predictedLocation = { predictedLat, predictedLon, raw.altitude, raw.speed };
-    gpsData actualLocation = raw;
-    const float nisEast = (measuredEast - gGpsFilter.east.pos) * (measuredEast - gGpsFilter.east.pos) /
-                          (gGpsFilter.east.p00 + measurementVar);
-    const float nisNorth = (measuredNorth - gGpsFilter.north.pos) * (measuredNorth - gGpsFilter.north.pos) /
-                           (gGpsFilter.north.p00 + measurementVar);
-    const float nis = nisEast + nisNorth;
-
-    if (nis > OUTLIER_NIS_THRESHOLD) {
-        ESP_LOGI( TAG, "%s", "Dropping errant data point" );
-#ifdef SENDER
-        if (sdLoggingReady) {
-            appendGpsLogRow(predictedLocation, actualLocation, predictedLocation, newStatus.snr, false, nis);
-        }
-#endif
-        return false;
-    }
-
-    (void)updateAxis(gGpsFilter.east, measuredEast, measurementVar);
-    (void)updateAxis(gGpsFilter.north, measuredNorth, measurementVar);
-
-    float latDeg = raw.latitude;
-    float lonDeg = raw.longitude;
-    localToLatLon(gGpsFilter.frame, gGpsFilter.east.pos, gGpsFilter.north.pos, latDeg, lonDeg);
-
-    filtered->latitude = latDeg;
-    filtered->longitude = lonDeg;
-    filtered->altitude = raw.altitude;
-    filtered->speed = raw.speed;
-#ifdef SENDER
-    if (sdLoggingReady) {
-        appendGpsLogRow(predictedLocation, actualLocation, *filtered, newStatus.snr, true, nis);
-    }
-#endif
-    return true;
-}
-
-#ifdef SENDER
-bool initSdLogging() {
-    if (!SD.begin(SD_SPI_CS)) {
-        ESP_LOGE(TAG, "SD init failed; GPS logging disabled");
-        return false;
-    }
-
-    if (!SD.exists(GPS_LOG_FILE)) {
-        File logFile = SD.open(GPS_LOG_FILE, FILE_WRITE);
-        if (!logFile) {
-            ESP_LOGE(TAG, "Failed to create log file %s", GPS_LOG_FILE);
-            return false;
-        }
-        logFile.println("time,pred_lat,pred_lon,actual_lat,actual_lon,filtered_lat,filtered_lon,speed_mph,snr,accepted,nis");
-        logFile.close();
-    }
-
-    ESP_LOGI(TAG, "SD logging ready: %s", GPS_LOG_FILE);
-    return true;
-}
-
-void appendGpsLogRow(const gpsData &predicted,
-                     const gpsData &actual,
-                     const gpsData &filtered,
-                     float snr,
-                     bool accepted,
-                     float nis) {
-    File logFile = SD.open(GPS_LOG_FILE, FILE_APPEND);
-    if (!logFile) {
-        ESP_LOGW(TAG, "Failed to open %s for append", GPS_LOG_FILE);
-        return;
-    }
-
-    char timeBuf[32];
-    if (gps.date.isValid() && gps.time.isValid()) {
-        snprintf(timeBuf, sizeof(timeBuf), "%04d-%02d-%02dT%02d:%02d:%02dZ",
-                 gps.date.year(), gps.date.month(), gps.date.day(),
-                 gps.time.hour(), gps.time.minute(), gps.time.second());
-    } else {
-        snprintf(timeBuf, sizeof(timeBuf), "millis:%lu", (unsigned long)millis());
-    }
-
-    logFile.printf("%s,%.8f,%.8f,%.8f,%.8f,%.8f,%.8f,%.2f,%.2f,%d,%.4f\n",
-                   timeBuf,
-                   predicted.latitude, predicted.longitude,
-                   actual.latitude, actual.longitude,
-                   filtered.latitude, filtered.longitude,
-                   actual.speed, snr,
-                   accepted ? 1 : 0, nis);
-    logFile.close();
-}
-#endif
-
 bool initESPNow() {
     if (esp_now_init() != ESP_OK) {
         ESP_LOGI( TAG, "ESP-NOW init failed");
@@ -455,70 +364,4 @@ bool initESPNow() {
         addESPPeer(peers[i]);
     }
     return true;
-}
-
-void initAxis(Kalman1D &axis, float initialPos) {
-    axis.pos = initialPos;
-    axis.vel = 0.0f;
-    axis.p00 = 25.0f;   // Position variance (m^2)
-    axis.p01 = 0.0f;
-    axis.p10 = 0.0f;
-    axis.p11 = 100.0f;  // Velocity variance (m^2/s^2)
-}
-
-void predictAxis(Kalman1D &axis, float dt) {
-    axis.pos += axis.vel * dt;
-
-    const float oldP00 = axis.p00;
-    const float oldP01 = axis.p01;
-    const float oldP10 = axis.p10;
-    const float oldP11 = axis.p11;
-
-    const float dt2 = dt * dt;
-    const float dt3 = dt2 * dt;
-    const float dt4 = dt2 * dt2;
-    const float accelVar = MODEL_ACCEL_SIGMA_MPS2 * MODEL_ACCEL_SIGMA_MPS2;
-
-    const float q00 = 0.25f * dt4 * accelVar;
-    const float q01 = 0.5f * dt3 * accelVar;
-    const float q11 = dt2 * accelVar;
-
-    axis.p00 = oldP00 + dt * (oldP01 + oldP10) + dt2 * oldP11 + q00;
-    axis.p01 = oldP01 + dt * oldP11 + q01;
-    axis.p10 = oldP10 + dt * oldP11 + q01;
-    axis.p11 = oldP11 + q11;
-}
-
-float updateAxis(Kalman1D &axis, float measurement, float measurementVar) {
-    const float innovation = measurement - axis.pos;
-    const float s = axis.p00 + measurementVar;
-    const float k0 = axis.p00 / s;
-    const float k1 = axis.p10 / s;
-
-    const float oldP00 = axis.p00;
-    const float oldP01 = axis.p01;
-
-    axis.pos += k0 * innovation;
-    axis.vel += k1 * innovation;
-
-    axis.p00 = axis.p00 - (k0 * oldP00);
-    axis.p01 = axis.p01 - (k0 * oldP01);
-    axis.p10 = axis.p10 - (k1 * oldP00);
-    axis.p11 = axis.p11 - (k1 * oldP01);
-
-    return (innovation * innovation) / s;
-}
-
-void latLonToLocal(const LocalFrame &frame, float latDeg, float lonDeg, float &eastM, float &northM) {
-    const float latRad = latDeg * KF_DEG_TO_RAD;
-    const float lonRad = lonDeg * KF_DEG_TO_RAD;
-    eastM = (lonRad - frame.refLonRad) * frame.cosRefLat * EARTH_RADIUS_M;
-    northM = (latRad - frame.refLatRad) * EARTH_RADIUS_M;
-}
-
-void localToLatLon(const LocalFrame &frame, float eastM, float northM, float &latDeg, float &lonDeg) {
-    const float latRad = frame.refLatRad + (northM / EARTH_RADIUS_M);
-    const float lonRad = frame.refLonRad + (eastM / (EARTH_RADIUS_M * frame.cosRefLat));
-    latDeg = latRad * KF_RAD_TO_DEG;
-    lonDeg = lonRad * KF_RAD_TO_DEG;
 }

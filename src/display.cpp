@@ -1,4 +1,5 @@
 #include "display.h"
+#include "gps_processing.h"
 #include "M5_SX127X.h"
 
 extern uint16_t screenColor;
@@ -22,9 +23,9 @@ void centerCursor(const lgfx::GFXfont* font, int size, const char* text) {
                          (M5.Display.height() - textHeight) / 2);
 }
 
-void updateDisplay( loraDataPacket newPkt, bool isSender) {
+void updateDisplay(loraGpsPacket newPkt, bool isSender) {
     static char msg[32];
-    gpsData location = newPkt.location;
+    gpsData location = newPkt.payload;
 
     M5.Display.setFont(&FreeSansBold18pt7b);
     M5.Display.setTextColor(TFT_WHITE, screenColor);
@@ -53,20 +54,8 @@ void updateDisplay( loraDataPacket newPkt, bool isSender) {
     snprintf( msg, sizeof( msg ), "Batt: %d%% / %d%%", newPkt.batt, M5.Power.getBatteryLevel() );
     M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.getCursorY()+M5.Display.fontHeight()  );
     M5.Display.print( msg );
-}
 
-bool nearlyZero( double valueToCheck ) {
-    const double EPSILON = 1e-9;  // or whatever tolerance makes sense for your use case
-
-    if( std::abs(valueToCheck) < EPSILON )
-        return true;
-    return false;
-}
-
-bool locationInBounds( gpsData newLocation ) {
-    if( nearlyZero(newLocation.latitude) || newLocation.latitude > 90.0 || newLocation.latitude < -90.0 ||
-        nearlyZero(newLocation.longitude) || newLocation.longitude > 180.0 || newLocation.longitude < -180.0 ) {
-            return false;
-    }
-    return true;
+    snprintf( msg, sizeof( msg ), "Sats: %d", newPkt.payload.sats );
+    M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.getCursorY()+M5.Display.fontHeight()  );
+    M5.Display.print( msg );
 }
