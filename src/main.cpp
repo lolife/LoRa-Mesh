@@ -1,5 +1,7 @@
 #include "main.h"
 
+extern char    loraMessage[MAX_MSG_SIZE];
+
 void setup() {
     //Serial.begin( 115200 );
     // Initialize M5Stack with proper configuration
@@ -16,7 +18,8 @@ void setup() {
     M5.Display.setFont(&Orbitron_Light_32);
     
     // Initialize LoRa
-    setupLoRa();
+    if( ! setupLoRa() )
+        displayMessage("LoRa init failed", true, screenColor );
     
     // Display initial mode
     initializeWiFi();
@@ -54,41 +57,6 @@ void loop() {
     smartDelay(LOOP_DELAY);
 }
 
-void setupLoRa() {
-    // Initialize SPI for LoRa module
-    SPI.begin(LORA_SCLK, LORA_MISO, LORA_MOSI, -1);
-    LoRa.setSPI(&SPI);
-    LoRa.setPins(CS_PIN, RST_PIN, IRQ_PIN);
-    
-    // Start LoRa
-    if (!LoRa.begin(LORA_FREQ)) {
-        ESP_LOGE( TAG, "%s", "LoRa init fail." );
-        displayMessage("LoRa init fail.", true, screenColor);
-        smartDelay(1000);
-    }
-    
-    // Configure LoRa parameters
-    LoRa.setTxPower(LORA_TX_POWER);
-    LoRa.setSignalBandwidth(LORA_BW);
-    LoRa.setSpreadingFactor(LORA_SF);
-    LoRa.setCodingRate4(LORA_CODING_RATE);
-    LoRa.setSyncWord(LORA_SYNC_WORD);
-    LoRa.enableCrc();
-}
-
-bool sendPacket( char *payload, int packetSize ) {
-    LoRa.beginPacket();
-    for( int i=0; i< packetSize; ++i )
-        LoRa.write( (char)payload[i] );
-    LoRa.endPacket();
-    delay(10);
-
-    //ESP_LOGI( TAG, "Sent packet %s", payload );
-    if( LoRa.getWriteError() != 0 )
-        return false;
-    return true;
-}
-
 void handleSender() {
     static long lastPacketTime = millis();
     static long lastDisplayUpdate = millis();
@@ -108,11 +76,8 @@ void handleSender() {
             ESP_LOGW(TAG, "Rejected implausible GPS point: %.6f, %.6f",
                      rawLocation.latitude, rawLocation.longitude);
         }
-
-
     }
 #endif
-
     // Send packet at regular intervals
     if (millis() - lastPacketTime > PACKET_INTERVAL) {
         lastPacketTime = millis();
@@ -130,49 +95,16 @@ void handleSender() {
         updateDisplay(locationPkt, true);
         lastDisplayUpdate = millis();
     }
-
-    // static unsigned int lastStatus = 0;
-    // if(millis() - lastStatus > 10000) { 
-    //     ESP_LOGI( TAG, "%s", "Posting to ESP" );
-    //     msg = { "S", 1.0};
-    //     sendStatus(msg); // Send our data out to the ESP-NOW network
-    //     lastStatus = millis();
-    // }
 }
 
-int receivePacket() {
-    char msg[MAX_MSG_SIZE];
-    
-    // Check for incoming packets
-    int packetSize = LoRa.parsePacket();
+int handlePacket() {
+    int packetSize = receivePacket();
     if( packetSize < 1 )
         return 0;
 
-    ESP_LOGI( TAG, "Got packet size %d", packetSize );
-    lastPacketTime = millis();
-
-    // Limit reading to buffer size
-    int bytesToRead = packetSize;
-    if (bytesToRead > MAX_MSG_SIZE) {
-        bytesToRead = MAX_MSG_SIZE;
-    }
-    
-    // Read packet data
-    int i = 0;
-    while (LoRa.available() && i < bytesToRead) {
-        msg[i] = (char)LoRa.read();
-        //ESP_LOGD( TAG, "Got byte: %x", msg[i] );
-        i++;
-    }
-    // Drain any remaining bytes
-    while (LoRa.available()) {
-        ESP_LOGV( TAG, "%s", "Throwing away data" );
-        LoRa.read();
-    }
-
-    if (i == sizeof(loraLocationPacket) ) {
-        //loraLocationPacket locationPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0 } };
-        memcpy(&locationPkt, msg, i);
+    if (packetSize == sizeof(loraDataPacket) ) {
+        //loraDataPacket locationPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0 } };
+        memcpy(&locationPkt, &loraMessage, packetSize );
         if (locationPkt.type != LORA_PKT_LOCATION) {
             ESP_LOGW(TAG, "Unexpected type %u for location packet size", locationPkt.type);
             return 0;
@@ -182,9 +114,9 @@ int receivePacket() {
         ESP_LOGV( TAG, "Got msg: %.8f", newLocation.speed );
         return 1;
     }
-    else if (i == sizeof(loraStatus) ) {
+    else if (packetSize == sizeof(loraStatus) ) {
         //loraStatus newStatus = { 0, 0, 0.0, 0 };
-        memcpy( &newStatus, msg, i );
+        memcpy( &newStatus, &loraMessage, packetSize );
         ESP_LOGI( TAG, "SNR = %.1f", newStatus.snr );
         if (newStatus.type != LORA_PKT_ACK) {
             ESP_LOGW(TAG, "Unexpected type %u for ACK packet size", newStatus.type);
@@ -193,10 +125,9 @@ int receivePacket() {
         lastRxAckSeq = newStatus.seq;
         return 2;
    }
-   ESP_LOGW(TAG, "Ignoring packet with unexpected size: %d", i);
+   ESP_LOGW(TAG, "Ignoring packet with unexpected size: %d", packetSize );
    return 0;
 }
-
 bool waitForAck(uint32_t expectedSeq, unsigned long timeoutMs) {
     unsigned long start = millis();
     while (millis() - start < timeoutMs) {
@@ -246,7 +177,7 @@ void serviceBackgroundTasks() {
 void handleReceiver() {
     static long lastDisplayUpdate = millis();
 
-    int packetType = receivePacket();
+    int packetType = handlePacket();
     if( packetType == 1 ) { // got new location
         loraStatus newStatus = { LORA_PKT_ACK, lastRxLocationSeq, LoRa.packetSnr(), M5.Power.getBatteryLevel() };
         ESP_LOGI(TAG, "Sending ACK seq: %" PRIu32, newStatus.seq);
@@ -277,7 +208,7 @@ void handleReceiver() {
     }
 }
 
-void postToThingsBoard(loraLocationPacket newPkt) {
+void postToThingsBoard(loraDataPacket newPkt) {
     unsigned char payload[TELEMETRY_DOC_SIZE];
     JsonDocument doc;
 

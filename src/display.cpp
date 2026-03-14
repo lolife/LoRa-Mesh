@@ -22,7 +22,7 @@ void centerCursor(const lgfx::GFXfont* font, int size, const char* text) {
                          (M5.Display.height() - textHeight) / 2);
 }
 
-void updateDisplay( loraLocationPacket newPkt, bool isSender) {
+void updateDisplay( loraDataPacket newPkt, bool isSender) {
     static char msg[32];
     gpsData location = newPkt.location;
 

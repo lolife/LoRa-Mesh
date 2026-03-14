@@ -40,3 +40,74 @@
 #define LOOP_DELAY 100           // Main loop delay
 #define ACK_TIMEOUT_MS 2500
 #define ACK_RETRY_COUNT 4
+
+char    loraMessage[MAX_MSG_SIZE];
+extern char TAG[36];
+
+bool setupLoRa() {
+    // Initialize SPI for LoRa module
+    SPI.begin(LORA_SCLK, LORA_MISO, LORA_MOSI, -1);
+    LoRa.setSPI(&SPI);
+    LoRa.setPins(CS_PIN, RST_PIN, IRQ_PIN);
+    
+    // Start LoRa
+    if (!LoRa.begin(LORA_FREQ)) {
+        ESP_LOGE( TAG, "%s", "LoRa init fail." );
+        return false;
+    }
+    
+    // Configure LoRa parameters
+    LoRa.setTxPower(LORA_TX_POWER);
+    LoRa.setSignalBandwidth(LORA_BW);
+    LoRa.setSpreadingFactor(LORA_SF);
+    LoRa.setCodingRate4(LORA_CODING_RATE);
+    LoRa.setSyncWord(LORA_SYNC_WORD);
+    LoRa.enableCrc();
+
+    return true;
+}
+
+bool sendPacket( char *payload, int packetSize ) {
+    LoRa.beginPacket();
+    for( int i=0; i< packetSize; ++i )
+        LoRa.write( (char)payload[i] );
+    LoRa.endPacket();
+    delay(10);
+
+    //ESP_LOGI( TAG, "Sent packet %s", payload );
+    if( LoRa.getWriteError() != 0 )
+        return false;
+    return true;
+}
+
+int receivePacket() {
+    // Check for incoming packets
+    int packetSize = LoRa.parsePacket();
+    if( packetSize < 1 )
+        return 0;
+
+    ESP_LOGI( TAG, "Got packet size %d", packetSize );
+
+    // Limit reading to buffer size
+    int bytesToRead = packetSize;
+    if (bytesToRead > MAX_MSG_SIZE) {
+        bytesToRead = MAX_MSG_SIZE;
+    }
+    
+    memset( loraMessage, '\0', MAX_MSG_SIZE );
+
+    // Read packet data
+    int i = 0;
+    while (LoRa.available() && i < bytesToRead) {
+        loraMessage[i] = (char)LoRa.read();
+        //ESP_LOGD( TAG, "Got byte: %x", loraMessage[i] );
+        i++;
+    }
+    // Drain any remaining bytes
+    while (LoRa.available()) {
+        ESP_LOGV( TAG, "%s", "Throwing away data" );
+        LoRa.read();
+    }
+    return packetSize;
+}
+

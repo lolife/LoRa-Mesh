@@ -17,7 +17,7 @@
 gpsData location     = { 0.0, 0.0, 0.0, 0.0 };
 gpsData newLocation  = { 0.0, 0.0, 0.0, 0.0 };
 loraStatus newStatus = { 0, 0, 0.0, 0 };
-loraLocationPacket locationPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0 } };
+loraDataPacket locationPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0 } };
 
 static uint32_t nextTxSeq = 0;
 static uint32_t lastRxLocationSeq = 0;
@@ -41,21 +41,19 @@ char TAG[36];
 #endif
 
 // Function prototypes
-void setupLoRa();
 void handleSender();
 void handleReceiver();
 static void smartDelay(unsigned long ms);
-void postToThingsBoard(loraLocationPacket newPkt);
+void postToThingsBoard(loraDataPacket newPkt);
 bool initializeWiFi();
 bool nearlyZero( double valueToCheck );
 bool locationInBounds( gpsData newLocation );
-bool sendPacket( char *payload, int packetSize );
-int receivePacket();
 bool waitForAck(uint32_t expectedSeq, unsigned long timeoutMs);
 bool sendLocationWithAckRetries(unsigned int maxAttempts);
 void serviceBackgroundTasks();
 bool acceptGpsMeasurement(const gpsData &raw, gpsData *filtered);
 bool initESPNow();
+int handlePacket();
 #ifdef SENDER
 bool initSdLogging();
 void appendGpsLogRow(const gpsData &predicted,

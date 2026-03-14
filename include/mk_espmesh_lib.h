@@ -9,15 +9,6 @@ typedef struct {
   float varValue;
 } StatusMessage;
 
-struct envData {
-    float temperature;
-    float humidity;
-    float pressure;
-    float gas_resistance;
-    int iaq;
-    int iaq_q;
-};
-
 struct Peer {
   char name[32];
   uint8_t address[6];
