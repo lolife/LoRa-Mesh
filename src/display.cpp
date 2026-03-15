@@ -1,5 +1,4 @@
 #include "display.h"
-#include "gps_processing.h"
 #include "M5_SX127X.h"
 
 extern uint16_t screenColor;
@@ -23,22 +22,16 @@ void centerCursor(const lgfx::GFXfont* font, int size, const char* text) {
                          (M5.Display.height() - textHeight) / 2);
 }
 
-void updateDisplay(loraGpsPacket newPkt, bool isSender) {
+void updateDisplay(loraEnvPacket newPkt, bool isSender) {
     static char msg[32];
-    gpsData location = newPkt.payload;
+    envData env = newPkt.payload;
 
     M5.Display.setFont(&FreeSansBold18pt7b);
     M5.Display.setTextColor(TFT_WHITE, screenColor);
     M5.Display.setCursor(0, 10);
 
-    if( ! locationInBounds( location ) ) {
-        M5.Display.clear( TFT_RED );
-        snprintf( msg, sizeof( msg ), "%s", "No Position" );
-    }
-    else {
-        M5.Display.clear( screenColor );
-        snprintf( msg, sizeof( msg ), "%.2f mph", location.speed );
-    }
+    M5.Display.clear(screenColor);
+    snprintf(msg, sizeof(msg), "%.1f C", env.temperature);
     M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, (M5.Display.height() - M5.Display.fontHeight()) / 4);
     M5.Display.print( msg );
 
@@ -55,7 +48,11 @@ void updateDisplay(loraGpsPacket newPkt, bool isSender) {
     M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.getCursorY()+M5.Display.fontHeight()  );
     M5.Display.print( msg );
 
-    snprintf( msg, sizeof( msg ), "Sats: %d", newPkt.payload.sats );
+    snprintf(msg, sizeof(msg), "Hum: %.1f%%", env.humidity);
+    M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.getCursorY()+M5.Display.fontHeight());
+    M5.Display.print(msg);
+
+    snprintf(msg, sizeof(msg), "Pres: %.1f hPa", env.pressure);
     M5.Display.setCursor((M5.Display.width() - M5.Display.textWidth(msg)) / 2, M5.Display.getCursorY()+M5.Display.fontHeight()  );
     M5.Display.print( msg );
 }

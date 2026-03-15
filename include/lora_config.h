@@ -34,7 +34,7 @@
 #define LORA_SYNC_WORD 0x2D
 
 // Timing constants
-#define PACKET_INTERVAL 15000     // Send packet every n seconds (sender)
+#define PACKET_INTERVAL 25000     // Send packet every n seconds (sender)
 #define DISPLAY_UPDATE 1500      // Update display every n seconds
 #define NO_CONTACT_TIMEOUT 60000 // Show "No contact" after n seconds
 #define LOOP_DELAY 100           // Main loop delay

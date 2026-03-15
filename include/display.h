@@ -23,4 +23,4 @@ void centerCursor(const lgfx::GFXfont* font, int size, const char* text);
  * @param screenColor Current screen color in RGB565 format
  * @param isSender True if sender, false if receiver
  */
-void updateDisplay(loraGpsPacket newPkt, bool isSender);
+void updateDisplay(loraEnvPacket newPkt, bool isSender);

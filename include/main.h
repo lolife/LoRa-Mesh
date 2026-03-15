@@ -21,12 +21,13 @@ gpsData newLocation  = { 0.0, 0.0, 0.0, 0.0 };
 envData latestEnv    = { 0.0, 0.0, 0.0, 0.0, 0, 0 };
 loraStatus newStatus = { 0, 0, 0.0, 0 };
 loraGpsPacket locationPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0 } };
+loraEnvPacket envPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0, 0, 0 } };
 loraTxPacket txPkt = { 0, 0, 0.0, 0, {} };
+unsigned long lastSensorRefresh = 0;
 
 static uint32_t nextTxSeq = 0;
 static uint32_t lastRxDataSeq = 0;
 static uint32_t lastRxAckSeq = 0;
-static StatusMessage msg = { "S", 1.0};
 // Global variables
 uint16_t screenColor = TFT_DARKGREEN;
 static long lastPacketTime = 0;
@@ -51,11 +52,20 @@ char TAG[36];
     static const int TXPin = GPS_TX_PIN;
 #endif
 
+#if defined(ENV3)
+    #include <M5UnitUnified.h>
+    #include <M5UnitUnifiedENV.h>
+    // M5 Units
+    m5::unit::UnitUnified Units;
+    m5::unit::UnitENV3 unitENV3;
+    bool initializeSensors();
+#endif
+
 // Function prototypes
 void handleSender();
 void handleReceiver();
 static void smartDelay(unsigned long ms);
-void postToThingsBoard(loraGpsPacket newPkt);
+void postToThingsBoard(loraEnvPacket newPkt);
 bool initializeWiFi();
 bool waitForAck(uint32_t expectedSeq, unsigned long timeoutMs);
 bool sendDataWithAckRetries(unsigned int maxAttempts);

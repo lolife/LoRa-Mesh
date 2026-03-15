@@ -61,7 +61,7 @@ static constexpr int LORA_PAYLOAD_KIND_GPS = 1;
 static constexpr int LORA_PAYLOAD_KIND_ENV = 2;
 
 #ifndef LORA_TX_PAYLOAD_KIND
-#define LORA_TX_PAYLOAD_KIND LORA_PAYLOAD_KIND_GPS
+#define LORA_TX_PAYLOAD_KIND LORA_PAYLOAD_KIND_ENV
 #endif
 
 template <int PayloadKind>
@@ -129,5 +129,7 @@ inline bool decodeLoraStatusPacket(const char *buffer, int packetSize, loraStatu
 // 2) Add a LoraPayloadTraits<YourType> specialization with a packetType.
 // 3) Add a LORA_PAYLOAD_KIND_* constant and LoraPayloadByKind specialization.
 static_assert(sizeof(gpsData) == 20, "gpsData size changed");
+static_assert(sizeof(envData) == 24, "envData size changed");
 static_assert(sizeof(loraStatus) == 13, "loraStatus size changed");
 static_assert(sizeof(loraGpsPacket) == 33, "loraGpsPacket size changed");
+static_assert(sizeof(loraEnvPacket) == 37, "loraEnvPacket size changed");
