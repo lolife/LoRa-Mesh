@@ -20,7 +20,7 @@ struct Peer {
 // Define all peers as constants
 //const Peer core1 = { "Core1",    {0x24, 0xEC, 0x4A, 0x36, 0xF7, 0x94} };
 const Peer core2 = { "In Mid",  {0xF4, 0x12, 0xFA, 0xBA, 0x1A, 0x10} };
-const Peer core3 = { "Far Out",    {0x30, 0xED, 0xA0, 0xD4, 0xBC, 0x08} };
+const Peer core3 = { "GPS",    {0x30, 0xED, 0xA0, 0xD4, 0xBC, 0x08} };
 const Peer stick = { "Stick", {0x00, 0x4B, 0x12, 0xC4, 0x6F, 0xCC} };
 const Peer nano  = { "Nano",     {0x54, 0x32, 0x04, 0x3E, 0xFE, 0xF4} };
 const Peer nano2 = { "Out",    {0x54, 0x32, 0x04, 0x3F, 0x02, 0xCC } };
@@ -51,7 +51,7 @@ const Peer m5basic = { "Studio",  {0x84, 0x1F, 0xE8, 0x83, 0x45, 0x54} };
     const char* TB_DEVICE_TOKEN = "0ounzp3k0q205tosgb8u"; // M5-CoreS3-02 F4:12:FA:BA:1A:10
   #elif defined(CORE3)
     Peer *me = const_cast<Peer*>(&core3);
-    Peer peers[] = { core2, stick, atom, m5basic };
+    Peer peers[] = { m5basic };
     const char* TB_DEVICE_TOKEN = "343qS0FTegOCYGz4ubqM"; // M5-CoreS3-03 30:ED:A0:D4:BC:08
   #endif
 
@@ -131,7 +131,7 @@ void onDataRecv(const esp_now_recv_info_t *esp_now_info, const uint8_t *data, in
       memcpy( peers[p].name, msg.deviceName, sizeof(peers[p].name ) );
       peers[p].lastHeard = millis();
       peers[p].currentData = msg;
-      ESP_LOGV( TAG, "From %s: %s = %0.1f", peers[p].name, msg.varName, msg.varValue);
+      //ESP_LOGV( TAG, "From %s: %s = %0.1f", peers[p].name, msg.varName, msg.varValue);
     }
     else
       ESP_LOGE( TAG, "Peer %s not found?", stringMacAddress(esp_now_info->src_addr).c_str());

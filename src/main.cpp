@@ -6,30 +6,6 @@
 
 extern char    loraMessage[MAX_MSG_SIZE];
 
-static void logBootImageInfo() {
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    const esp_partition_t *boot = esp_ota_get_boot_partition();
-
-    ESP_LOGI(TAG, "Reset reason=%d", static_cast<int>(esp_reset_reason()));
-    ESP_LOGI(TAG, "Running partition: %s @0x%08" PRIx32,
-             running ? running->label : "null",
-             running ? running->address : 0);
-    ESP_LOGI(TAG, "Boot partition: %s @0x%08" PRIx32,
-             boot ? boot->label : "null",
-             boot ? boot->address : 0);
-
-    esp_app_desc_t appDesc;
-    if (running && esp_ota_get_partition_description(running, &appDesc) == ESP_OK) {
-        ESP_LOGI(TAG, "Running app: project=%s version=%s built=%s %s",
-                 appDesc.project_name,
-                 appDesc.version,
-                 appDesc.date,
-                 appDesc.time);
-    } else {
-        ESP_LOGW(TAG, "Unable to read running app description");
-    }
-}
-
 static void setupOtaDiagnostics() {
     ArduinoOTA.onStart([]() {
         ESP_LOGI(TAG, "OTA start");
@@ -72,10 +48,7 @@ void setup() {
     
     // Display initial mode
     initializeWiFi();
-    logBootImageInfo();
     mqttClient.setCallback(mqttCallback);
-    if (!initESPNow())
-        displayMessage("ESP-NOW init failed", true, screenColor );
 
 #ifdef SENDER
     snprintf( TAG, sizeof(TAG), "➡️LoRaMeshSender" ); 
@@ -94,17 +67,15 @@ void setup() {
         displayMessage("GPS/LoRa pin conflict", true, TFT_RED);
     }
 #endif
-    //sdLoggingReady = initSdLogging();
-    
     ESP_LOGI( TAG, "%s", "LoRa Sender" );
     displayMessage("LoRa Sender", true, screenColor);
-    displayMessage("Going Dark", true, screenColor);
-    M5.Display.setBrightness(5);
+    M5.Display.setBrightness(80);
 #else
+    if (!initESPNow())
+        displayMessage("ESP-NOW init failed", true, screenColor );
     snprintf( TAG, sizeof(TAG), "⬅️LoRaMeshReceive" ); 
     ESP_LOGI( TAG, "%s", "LoRa Receiverr" );
-    // displayMessage("Going Dark", true, screenColor);
-    // M5.Display.setBrightness(5);
+    M5.Display.setBrightness(80);
 #endif
 } 
 
@@ -132,8 +103,6 @@ void handleSender() {
     float temp2 = unitENV3.qmp6988.temperature();
     latestEnv.temperature = ((temp1 + temp2) / 2.0f);
     latestEnv.pressure = unitENV3.qmp6988.pressure() / 100.0f;
-
-    txPkt.payload = latestEnv;
 
     lastSensorRefresh = millis();
 #else
@@ -178,7 +147,7 @@ void handleSender() {
         lastTxPacketTime = millis();
 
         if( !sendDataWithAckRetries(ACK_RETRY_COUNT) )
-            ESP_LOGE( TAG, "Error sending env data" );
+            ESP_LOGE( TAG, "Error sending payload data" );
         
         // Update display immediately after sending
         updateDisplay(txPkt, true);
@@ -237,7 +206,7 @@ int handlePacket() {
         lastPacketTime = millis();
         lastRxDataSeq = locationPkt.seq;
         newLocation = locationPkt.payload;
-        ESP_LOGI( TAG, "Got msg: %.8f", newLocation.speed );
+        ESP_LOGV( TAG, "Got msg: %.8f", newLocation.speed );
         return 1;
     }
     else if (packetType == LORA_PKT_ENV) {
@@ -349,23 +318,53 @@ void handleReceiver() {
         sendPacket( (char*)&newStatus, sizeof(newStatus) );
     }
 
+    static long lastPost = millis();
     if( packetType == 3 ) { // got new env payload
         updateDisplay(envPkt, false);
-        postToThingsBoard(envPkt);
-        ESP_LOGI( TAG, "%s", "Posting to ESP" );
-        StatusMessage msg = { "Far Out", "T", envPkt.payload.temperature };
-        sendStatus(msg); // Send our data out to the ESP-NOW network
-    }
-
-    // Periodic display update and timeout check
-    if (millis() - lastDisplayUpdate > PACKET_INTERVAL) {
-        // Check for communication timeout
-        if (millis() - lastPacketTime > NO_CONTACT_TIMEOUT ) {
-            latestEnv = { 0.0, 0.0, 0.0, 0.0, 0, 0 };
-            envPkt.payload = latestEnv;
+        if( millis() - lastPost > 30000 ) {
+            postToThingsBoard(envPkt);
+            lastPost = millis();
         }
-        updateDisplay(envPkt, false);
-        lastDisplayUpdate = millis();
+        ESP_LOGI( TAG, "%s", "Posting to ESP" );
+        StatusMessage msg;
+        strncpy( msg.deviceName, me->name, sizeof(msg.deviceName) );
+        msg.varName[0] = 'T';
+        msg.varName[1] = '\0';
+        msg.varValue = envPkt.payload.temperature;      
+        sendStatus(msg); // Send our data out to the ESP-NOW network
+        // Periodic display update and timeout check
+        if (millis() - lastDisplayUpdate > PACKET_INTERVAL) {
+            // Check for communication timeout
+            if (millis() - lastPacketTime > NO_CONTACT_TIMEOUT ) {
+                latestEnv = { 0.0, 0.0, 0.0, 0.0, 0, 0 };
+                envPkt.payload = latestEnv;
+            }
+            updateDisplay(envPkt, false);
+            lastDisplayUpdate = millis();
+        }
+    }
+    else if (packetType == 1) {
+        updateDisplay(locationPkt, false);
+        if( millis() - lastPost > 30000 ) {
+            postToThingsBoard(locationPkt);
+            lastPost = millis();
+        }
+        ESP_LOGI( TAG, "%s", "Posting to ESP" );
+        StatusMessage msg;
+        strncpy( msg.deviceName, me->name, sizeof(msg.deviceName) );
+        msg.varName[0] = 'V';
+        msg.varName[1] = '\0';
+        msg.varValue = locationPkt.payload.speed;      
+        sendStatus(msg); // Send our data out to the ESP-NOW network
+        if (millis() - lastDisplayUpdate > PACKET_INTERVAL) {
+            // Check for communication timeout
+            if (millis() - lastPacketTime > NO_CONTACT_TIMEOUT ) {
+                newLocation = { 0.0, 0.0, 0.0, 0.0, 0 };
+                locationPkt.payload = newLocation;
+            }
+            updateDisplay(locationPkt, false);
+            lastDisplayUpdate = millis();
+        }
     }
 
     // MQTT loop with reduced frequency
@@ -374,6 +373,30 @@ void handleReceiver() {
         mqttLoop();
         lastMqttLoop = millis();
     }
+}
+
+void postToThingsBoard( loraGpsPacket newPkt ) {
+    unsigned char payload[TELEMETRY_DOC_SIZE];
+    JsonDocument doc;
+
+
+
+    gpsData newData = newPkt.payload;
+    if( ! locationInBounds( newData ) )
+        return;
+    ESP_LOGI( TAG, "%s", "Posting" );
+
+    doc["latitude"] = newData.latitude;
+    doc["longitude"] = newData.longitude;
+    doc["altitude"] = newData.altitude;
+    doc["speed"] = newData.speed;
+    doc["pkt_rssi"] = LoRa.packetSnr();
+
+    // Serialize the JSON object
+    size_t n = serializeJson(doc, payload);
+
+    // Publish the payload
+    mqttClient.publish(TELEMETRY_TOPIC, (const char*)payload, n);
 }
 
 void postToThingsBoard(loraEnvPacket newPkt) {
@@ -385,10 +408,8 @@ void postToThingsBoard(loraEnvPacket newPkt) {
 
     doc["temperature"] = newData.temperature;
     doc["humidity"] = newData.humidity;
-    doc["pressure"] = newData.pressure;
-    doc["gas_resistance"] = newData.gas_resistance;
-    doc["iaq"] = newData.iaq;
-    doc["iaq_q"] = newData.iaq_q;
+    doc["altitude"] = newData.pressure;
+
     doc["pkt_rssi"] = LoRa.packetSnr();
 
     // Serialize the JSON object

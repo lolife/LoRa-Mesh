@@ -43,10 +43,10 @@ char TAG[36];
     TinyGPSPlus gps;
     static const uint32_t GPSBaud = 115200;
     #ifndef GPS_RX_PIN
-        #define GPS_RX_PIN 14
+        #define GPS_RX_PIN 8
     #endif
     #ifndef GPS_TX_PIN
-        #define GPS_TX_PIN 13
+        #define GPS_TX_PIN 9
     #endif
     static const int RXPin = GPS_RX_PIN;
     static const int TXPin = GPS_TX_PIN;
@@ -61,11 +61,13 @@ char TAG[36];
     bool initializeSensors();
 #endif
 
+
 // Function prototypes
 void handleSender();
 void handleReceiver();
 static void smartDelay(unsigned long ms);
 void postToThingsBoard(loraEnvPacket newPkt);
+void postToThingsBoard(loraGpsPacket newPkt);
 bool initializeWiFi();
 bool waitForAck(uint32_t expectedSeq, unsigned long timeoutMs);
 bool sendDataWithAckRetries(unsigned int maxAttempts);

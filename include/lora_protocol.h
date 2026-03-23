@@ -61,7 +61,7 @@ static constexpr int LORA_PAYLOAD_KIND_GPS = 1;
 static constexpr int LORA_PAYLOAD_KIND_ENV = 2;
 
 #ifndef LORA_TX_PAYLOAD_KIND
-#define LORA_TX_PAYLOAD_KIND LORA_PAYLOAD_KIND_ENV
+#define LORA_TX_PAYLOAD_KIND LORA_PAYLOAD_KIND_GPS
 #endif
 
 template <int PayloadKind>
