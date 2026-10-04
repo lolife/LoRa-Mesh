@@ -1,4 +1,5 @@
 #include "main.h"
+#include "network_recovery.h"
 #include <cmath>
 #include <algorithm>
 #include <esp_ota_ops.h>
@@ -8,6 +9,7 @@
 extern char    loraMessage[MAX_MSG_SIZE];
 
 static void setupOtaDiagnostics() {
+    ArduinoOTA.setTimeout(10000); // Allow up to 10 seconds between incoming data.
     ArduinoOTA.onStart([]() {
         ESP_LOGI(TAG, "OTA start");
     });
@@ -31,6 +33,7 @@ void setup() {
     //Serial.begin( 115200 );
     // Initialize M5Stack with proper configuration
     ESP_LOGI(TAG, "FW %s %s", __DATE__, __TIME__);
+    setupOtaDiagnostics();
     auto cfg = M5.config();
     cfg.clear_display = true;
     cfg.internal_imu = true;   // Accelerometer wakes the display on movement.
@@ -50,8 +53,10 @@ void setup() {
     // Display initial mode
     initializeWiFi();
     configureMeshIdentity();
+#ifdef RECEIVER
     mqttClient.setBufferSize(TELEMETRY_DOC_SIZE + 64);
     mqttClient.setCallback(mqttCallback);
+#endif
 
 #ifdef SENDER
     snprintf( TAG, sizeof(TAG), "➡️LoRaMeshSender" ); 
@@ -82,13 +87,22 @@ void setup() {
 
 void loop() {
     M5.update();
+    serviceBackgroundTasks();
 
 #ifdef SENDER
     handleSender();
 #else
     handleReceiver();
 #endif
-    
+
+#ifdef RECEIVER
+    // Service received packets first; broker connects stay outside ACK waits.
+    static unsigned long lastMqttLoop = 0;
+    if (millis() - lastMqttLoop >= 1000) {
+        mqttLoop();
+        lastMqttLoop = millis();
+    }
+#endif
     smartDelay(LOOP_DELAY);
 }
 
@@ -305,6 +319,8 @@ bool sendDataWithAckRetries(unsigned int maxAttempts) {
 }
 
 void serviceBackgroundTasks() {
+    networkRecoveryLoop();
+    networkOtaLoop();
     if (serviceDisplayMotion()) {
 #ifdef SENDER
         updateDisplay(txPkt, true, LoRa.packetSnr(), newStatus.seq == txPkt.seq && txPkt.seq != 0);
@@ -329,7 +345,6 @@ void serviceBackgroundTasks() {
 void handleReceiver() {
     static unsigned long lastDisplayUpdate = 0;
     static unsigned long lastPost = 0;
-    static unsigned long lastMqttLoop = 0;
     const int packetType = handlePacket();
     if (packetType == 1) {
         newStatus = {LORA_PKT_ACK, lastRxDataSeq, LoRa.packetSnr(), M5.Power.getBatteryLevel()};
@@ -359,10 +374,6 @@ void handleReceiver() {
         updateDisplay(txPkt, false, LoRa.packetSnr(), txPkt.payload.available != 0);
         lastDisplayUpdate = millis();
     }
-    if (millis() - lastMqttLoop > 1000) {
-        mqttLoop();
-        lastMqttLoop = millis();
-    }
 }
 
 bool postToThingsBoard(const loraTelemetryPacket &pkt) {
@@ -380,7 +391,7 @@ bool postToThingsBoard(const loraTelemetryPacket &pkt) {
         if (std::isfinite(pkt.payload.env.humidity)) doc["humidity"] = pkt.payload.env.humidity;
         if (std::isfinite(pkt.payload.env.pressure)) doc["pressure"] = pkt.payload.env.pressure;
     }
-    if (doc.size() == 0 || !mqttClient.connected()) return false;
+    if (doc.size() == 0 || !networkAvailable() || !mqttClient.connected()) return false;
     doc["pkt_rssi"] = LoRa.packetSnr();
     doc["remote_battery"] = pkt.batt;
     doc["battery"] = M5.Power.getBatteryLevel();
@@ -392,15 +403,18 @@ bool postToThingsBoard(const loraTelemetryPacket &pkt) {
 bool initializeWiFi() {
     ESP_LOGI( TAG, "Connecting");
     
-    // Configure WiFi for lower power
+    // Configure station mode for WiFi and ESP-NOW.
     WiFi.mode(WIFI_STA);
     
-    // Reduce TX power to save energy (adjust based on signal strength needs)
-    WiFi.setTxPower(WIFI_POWER_11dBm); // Lower from default 20dBm
+    // Request the highest setting; the driver applies the board's power limits.
+    if (!WiFi.setTxPower(WIFI_POWER_21dBm)) {
+        ESP_LOGW(TAG, "%s", "Failed to set maximum WiFi transmit power");
+    }
     
     // Enable power saving mode
     WiFi.setSleep(false); // Keep the radio awake for ESP-NOW reception.
     
+    networkRecoveryBegin();
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
     WiFi.setAutoReconnect(true);
 
@@ -420,9 +434,6 @@ bool initializeWiFi() {
         return connected;
     }
 
-    setupOtaDiagnostics();
-    ArduinoOTA.begin();
-    ESP_LOGI(TAG, "ArduinoOTA ready at %s", WiFi.localIP().toString().c_str());
     return connected;
 }
 

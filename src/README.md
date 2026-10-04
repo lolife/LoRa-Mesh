@@ -50,6 +50,25 @@ before submitting the next packet. Receive callbacks only enqueue relays. The
 mesh does not include DTunnel's separate Sky Spy gateway features. Sky Spy
 `SKY1` broadcasts are recognized and skipped before status-message parsing.
 
+## WiFi and MQTT recovery
+
+Both sender and receiver use DTunnel's event-driven WiFi and OTA recovery. On the
+receiver, WiFi disconnects, lost IP addresses, brief reconnects, and DHCP address
+changes invalidate the MQTT transport. Event callbacks only record state; the
+firmware loop closes TCP before resetting MQTT and retries WiFi asynchronously
+after 15, 30, then 60 seconds.
+Retries keep station mode and the radio enabled for ESP-NOW.
+
+MQTT runs only on the receiver, pauses while WiFi is unavailable, and reconnects promptly
+after recovery with fresh RPC and attribute subscriptions. Broker failures retry
+every 15 seconds, slowing to 60 seconds after repeated failures. MQTT connection
+attempts use a five-second socket timeout and run outside LoRa ACK waits. OTA
+starts once WiFi obtains an IP, including after an offline boot, and stops while
+WiFi is unavailable. The receiver remains responsible for publishing telemetry.
+Both units request the highest WiFi transmit power setting (`WIFI_POWER_21dBm`),
+subject to the driver's hardware/country limits, and allow 10 seconds between
+incoming OTA data to tolerate temporary transfer stalls.
+
 ## Build and check
 
 Credentials stay in the ignored `include/credentials.h`. USB/OTA upload settings
@@ -58,11 +77,15 @@ remain in `platformio.ini`.
 ```sh
 pio run -e sender -e receiver -e sender-M5Basic
 python3 test/host/run.py
+python3 test/network/run.py
 ```
 
 Host checks cover telemetry availability flags, current and legacy wire formats,
 malformed packets, ACK sequence preservation, queue limits, low-memory retries,
 completion pacing, mesh relay deduplication, origin identity, inactive-peer fallback,
 and display motion detection, timeout extension, failed reads, and timer rollover.
+Network checks cover WiFi backoff, authentication failure, brief reconnects,
+IP changes/loss, MQTT transport resets and retry pacing, subscriptions, OTA
+lifecycle, and retry timing across timer rollover.
 Device reception, sensor wiring, display wake sensitivity, and mesh propagation
 still require a hardware check after flashing.
