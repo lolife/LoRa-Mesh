@@ -128,7 +128,8 @@ bool nearlyZero(double valueToCheck) {
     return fabs(valueToCheck) < EPSILON;
 }
 
-bool locationInBounds(gpsData newLocation) {
+bool locationInBounds(legacyGpsData newLocation) {
+    if (!std::isfinite(newLocation.latitude) || !std::isfinite(newLocation.longitude)) return false;
     if (nearlyZero(newLocation.latitude) || newLocation.latitude > 90.0 || newLocation.latitude < -90.0 ||
         nearlyZero(newLocation.longitude) || newLocation.longitude > 180.0 || newLocation.longitude < -180.0) {
         return false;
@@ -136,7 +137,7 @@ bool locationInBounds(gpsData newLocation) {
     return true;
 }
 
-bool acceptGpsMeasurement(const gpsData &raw, gpsData *filtered) {
+bool acceptGpsMeasurement(const legacyGpsData &raw, legacyGpsData *filtered) {
     if (!locationInBounds(raw)) {
         return false;
     }
@@ -196,8 +197,8 @@ bool acceptGpsMeasurement(const gpsData &raw, gpsData *filtered) {
     float predictedLat = raw.latitude;
     float predictedLon = raw.longitude;
     localToLatLon(gGpsFilter.frame, gGpsFilter.east.pos, gGpsFilter.north.pos, predictedLat, predictedLon);
-    gpsData predictedLocation = { predictedLat, predictedLon, raw.altitude, raw.speed };
-    gpsData actualLocation = raw;
+    legacyGpsData predictedLocation = { predictedLat, predictedLon, raw.altitude, raw.speed };
+    legacyGpsData actualLocation = raw;
     const float nisEast = (measuredEast - gGpsFilter.east.pos) * (measuredEast - gGpsFilter.east.pos) /
                           (gGpsFilter.east.p00 + measurementVar);
     const float nisNorth = (measuredNorth - gGpsFilter.north.pos) * (measuredNorth - gGpsFilter.north.pos) /
@@ -225,6 +226,7 @@ bool acceptGpsMeasurement(const gpsData &raw, gpsData *filtered) {
     filtered->longitude = lonDeg;
     filtered->altitude = raw.altitude;
     filtered->speed = raw.speed;
+    filtered->sats = raw.sats;
 #ifdef SENDER
     if (sdLoggingReady) {
         appendGpsLogRow(predictedLocation, actualLocation, *filtered, newStatus.snr, true, nis);
@@ -255,9 +257,9 @@ bool initSdLogging() {
     return true;
 }
 
-void appendGpsLogRow(const gpsData &predicted,
-                     const gpsData &actual,
-                     const gpsData &filtered,
+void appendGpsLogRow(const legacyGpsData &predicted,
+                     const legacyGpsData &actual,
+                     const legacyGpsData &filtered,
                      float snr,
                      bool accepted,
                      float nis) {

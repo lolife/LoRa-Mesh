@@ -16,14 +16,19 @@
 #include "mk_espmesh_lib.h"
 #include "mk_mqtt_lib.h"
 
-gpsData location     = { 0.0, 0.0, 0.0, 0.0 };
-gpsData newLocation  = { 0.0, 0.0, 0.0, 0.0 };
-envData latestEnv    = { 0.0, 0.0, 0.0, 0.0, 0, 0 };
-loraStatus newStatus = { 0, 0, 0.0, 0 };
-loraGpsPacket locationPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0 } };
-loraEnvPacket envPkt = { 0, 0, 0.0, 0, { 0.0, 0.0, 0.0, 0.0, 0, 0 } };
-loraTxPacket txPkt = { 0, 0, 0.0, 0, {} };
+#define TB_POST_INTERVAL 60000
+
+legacyGpsData location = {};
+telemetryData latestTelemetry = {};
+loraTelemetryPacket txPkt = {};
+loraStatus newStatus = {};
+unsigned long lastGpsRefresh = 0;
 unsigned long lastSensorRefresh = 0;
+bool gpsAvailable = false;
+bool envAvailable = false;
+#if defined(ENV3)
+bool sensorsReady = false;
+#endif
 
 static uint32_t nextTxSeq = 0;
 static uint32_t lastRxDataSeq = 0;
@@ -32,7 +37,7 @@ static uint32_t lastRxAckSeq = 0;
 uint16_t screenColor = TFT_DARKGREEN;
 static long lastPacketTime = 0;
 
-gpsData home = {44.89401,-93.47717, 304.42, 0.0 };
+legacyGpsData home = {44.89401,-93.47717, 304.42, 0.0 };
 static uint16_t lastRange = 0;
 
 char TAG[36];
@@ -66,12 +71,11 @@ char TAG[36];
 void handleSender();
 void handleReceiver();
 static void smartDelay(unsigned long ms);
-void postToThingsBoard(loraEnvPacket newPkt);
-void postToThingsBoard(loraGpsPacket newPkt);
+bool postToThingsBoard(const loraTelemetryPacket &newPkt);
 bool initializeWiFi();
 bool waitForAck(uint32_t expectedSeq, unsigned long timeoutMs);
 bool sendDataWithAckRetries(unsigned int maxAttempts);
-loraTxPayload buildTxPayload();
+telemetryData buildTxPayload();
 void serviceBackgroundTasks();
 bool initESPNow();
 int handlePacket();

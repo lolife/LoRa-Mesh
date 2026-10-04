@@ -2,6 +2,11 @@
 #include <M5Unified.h>
 #include "lora_protocol.h"
 
+void initializeDisplayMotion();
+// Returns true when motion has just woken the display.
+bool serviceDisplayMotion();
+bool isDisplayAwake();
+
 /**
  * Display a centered message on the screen
  * @param msg Message to display
@@ -23,5 +28,5 @@ void centerCursor(const lgfx::GFXfont* font, int size, const char* text);
  * @param screenColor Current screen color in RGB565 format
  * @param isSender True if sender, false if receiver
  */
-void updateDisplay(const loraGpsPacket &newPkt, bool isSender);
-void updateDisplay(const loraEnvPacket &newPkt, bool isSender);
+void updateDisplay(const loraTelemetryPacket &pkt, bool isSender,
+                   float localSnr, bool localSnrValid);

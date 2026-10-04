@@ -6,7 +6,7 @@
 #define TB_PORT   1883
 const char* TB_SERVER = "mqtt.thingsboard.cloud";
 #define RPC_DOC_SIZE 128
-#define TELEMETRY_DOC_SIZE 256
+#define TELEMETRY_DOC_SIZE 512
 
 // --- MQTT Topics ---
 #define TELEMETRY_TOPIC  "v1/devices/me/telemetry"
@@ -46,7 +46,7 @@ void reconnectMqtt() {
     
     // Attempt to connect with Device Token as Username
     // Use clean session to reduce server-side state
-    if (mqttClient.connect(TB_DEVICE_TOKEN, TB_DEVICE_TOKEN, NULL, NULL, 0, 0, NULL, true)) {
+    if (mqttClient.connect(getDeviceToken(), getDeviceToken(), NULL, NULL, 0, 0, NULL, true)) {
         ESP_LOGI( TAG, "%s", "connected!" );
         reconnectFailCount = 0; // Reset failure counter
         
