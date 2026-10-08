@@ -38,6 +38,7 @@ extern const char* TB_SERVER;
 inline const char* TB_SERVER="test.invalid";
 #endif
 #define TB_PORT 1883
+#define TELEMETRY_DOC_SIZE 512
 #define TELEMETRY_TOPIC "v1/devices/me/telemetry"
 #define ATTRIBUTES_TOPIC "v1/devices/me/attributes"
 #define RPC_SUBSCRIBE_TOPIC "v1/devices/me/rpc/request/+"
@@ -52,7 +53,7 @@ class WiFiClient { public: int stops=0; void stop(){stops++;} };
 class PubSubClient {
 public:
  bool online=false, connectOk=true, publishOk=true;
- int connections=0, publishes=0, loops=0, subscriptions=0; std::string username, clientId, payload;
+ int connections=0, publishes=0, loops=0, subscriptions=0; std::string username, clientId, payload, topic;
  std::function<void()> onPublish;
  PubSubClient(const char*,int,WiFiClient&){}
  bool connected(){return online;} void loop(){loops++;} void setSocketTimeout(int){} bool setBufferSize(int){return true;}
@@ -61,7 +62,7 @@ public:
  bool connect(const char* id,const char* user,const char* pass,const char*,int,int,const char*,bool){return connect(id,user,pass);}
  void disconnect(){online=false;}
  int state(){return online ? 0 : -1;}
- bool publish(const char*,const char* data,size_t len){publishes++;payload.assign(data,len);if(onPublish)onPublish();return publishOk;}
+ bool publish(const char* publishTopic,const char* data,size_t len){topic=publishTopic;publishes++;payload.assign(data,len);if(onPublish)onPublish();return publishOk;}
  bool publish(const char* topic,const char* data){return publish(topic,data,strlen(data));}
 };
 #ifdef TEST_PRIMARY_MQTT
@@ -81,7 +82,9 @@ public:
  friend String operator+(const char* a,const String& b){return std::string(a)+std::string(b);}
  friend String operator+(const String& a,const char* b){return std::string(a)+std::string(b);}
 };
-inline struct M5Mock { struct DisplayMock { void setBrightness(int){} } Display; } M5;
+inline struct M5Mock { struct DisplayMock { void setBrightness(int){} } Display; int getBoard(){return 1;} } M5;
+inline struct MeshIdentityMock { const char* name="Woods"; } meshIdentityMock;
+inline auto* me=&meshIdentityMock;
 inline const char* getDeviceToken(){return "primary-token";}
 #else
 inline WiFiClient ownWifi;

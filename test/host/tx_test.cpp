@@ -1,5 +1,9 @@
 #include <cassert>
 #include "../../src/mesh_tx.cpp"
+const MeshOptions& meshApplicationOptions() {
+    static const MeshOptions options = {ROLE_NONE, nullptr, nullptr, nullptr};
+    return options;
+}
 int main(){
  const uint8_t addr[6]={1,2,3,4,5,6};uint8_t payload[sizeof(StatusMessage)+1]={};
  assert(!queueMeshPacket(addr,payload,40,false));assert(initMeshTx());

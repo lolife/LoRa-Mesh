@@ -33,6 +33,13 @@ Threshold and timing constants live in `include/display_motion.h`.
 
 ## ESP-NOW mesh
 
+LoRa-Mesh, DTunnel and WindSens use the standalone sibling
+[MeshProtocol](../../MeshProtocol/README.md) library for their role registry, wire
+contracts and common mesh runtime. Oui Spy is excluded. Physical MAC addresses
+map to roles; role names and ThingsBoard tokens remain stable when devices are
+reassigned. Keep the application and library checkouts beside each other, and
+provide the library's ignored `config/role_tokens.local.h` on a fresh installation.
+
 The receiver uses DTunnel's current mesh node registry and 40-byte versioned
 `StatusMessage` contract. Identity is selected by local MAC, with the same build
 fallback rules as DTunnel. Every other registered node becomes a peer. WiFi
@@ -60,7 +67,10 @@ after 15, 30, then 60 seconds.
 Retries keep station mode and the radio enabled for ESP-NOW.
 
 MQTT runs only on the receiver, pauses while WiFi is unavailable, and reconnects promptly
-after recovery with fresh RPC and attribute subscriptions. Broker failures retry
+after recovery with fresh RPC and attribute subscriptions. Each connection publishes
+`firmware_version`, `ip_address`, `mac_address`, `board` (the M5GFX enum name),
+and `mesh_identity`, matching DTunnel. Failed attribute posts retry every 15 seconds
+until successful; a reconnect publishes the current values again. Broker failures retry
 every 15 seconds, slowing to 60 seconds after repeated failures. MQTT connection
 attempts use a five-second socket timeout and run outside LoRa ACK waits. OTA
 starts once WiFi obtains an IP, including after an offline boot, and stops while

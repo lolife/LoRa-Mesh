@@ -5,6 +5,7 @@
 #include <esp_log.h>
 #include "mk_espmesh_lib.h"
 #include "network_recovery.h"
+#include "board_name.h"
 
 const char* TB_SERVER = "mqtt.thingsboard.cloud";
 
@@ -16,6 +17,22 @@ const unsigned long RECONNECT_INTERVAL = 15000; // 15 seconds between retries
 int reconnectFailCount = 0;
 const int MAX_RECONNECT_FAIL = 5; // After 5 failures, wait longer
 static bool mqttAttempted = false;
+static bool attributesPublished = false;
+static unsigned long lastAttributeAttempt = 0;
+
+static bool postAttributesToThingsBoard() {
+    JsonDocument doc;
+    doc["firmware_version"] = "FW " __DATE__ " " __TIME__;
+    doc["ip_address"] = WiFi.localIP().toString();
+    doc["mac_address"] = WiFi.macAddress();
+    doc["board"] = boardName(M5.getBoard());
+    doc["mesh_identity"] = me->name;
+    char payload[TELEMETRY_DOC_SIZE];
+    const size_t length = measureJson(doc);
+    if (length >= sizeof(payload)) return false;
+    serializeJson(doc, payload, sizeof(payload));
+    return mqttClient.publish(ATTRIBUTES_TOPIC, payload, length);
+}
 
 void resetMqttConnection() {
     // Close TCP first so MQTT disconnect cannot write to a broken transport.
@@ -24,6 +41,7 @@ void resetMqttConnection() {
     mqttAttempted = false;
     lastReconnectAttempt = 0;
     reconnectFailCount = 0;
+    attributesPublished = false;
 }
 
 void reconnectMqtt() {
@@ -67,6 +85,8 @@ void reconnectMqtt() {
 
         // Optional: Subscribe to shared attribute updates
         mqttClient.subscribe(ATTRIBUTES_TOPIC);
+        lastAttributeAttempt = millis();
+        attributesPublished = postAttributesToThingsBoard();
     } else {
         ESP_LOGE( TAG, "failed, rc=%d, will retry", mqttClient.state());
         if (reconnectFailCount < MAX_RECONNECT_FAIL + 1) ++reconnectFailCount;
@@ -80,6 +100,11 @@ void mqttLoop() {
         reconnectMqtt();
     } else {
         mqttClient.loop(); // Process incoming messages
+        if (!attributesPublished && mqttClient.connected() &&
+            millis() - lastAttributeAttempt >= RECONNECT_INTERVAL) {
+            lastAttributeAttempt = millis();
+            attributesPublished = postAttributesToThingsBoard();
+        }
     }
 }
 
