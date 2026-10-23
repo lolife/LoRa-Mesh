@@ -37,7 +37,7 @@ void setup() {
     auto cfg = M5.config();
     cfg.clear_display = true;
     cfg.internal_imu = true;   // Accelerometer wakes the display on movement.
-    cfg.internal_rtc = false;  // Disable RTC to avoid ADC conflict
+    cfg.internal_rtc = false;  // RTC is unused
     cfg.internal_spk = false;  // Disable speaker
     cfg.internal_mic = false;  // Disable microphone
     M5.begin(cfg);
@@ -67,6 +67,7 @@ void setup() {
     if (!sensorsReady)
         displayMessage("Sensor(s) failed.", true, screenColor );
 #endif
+#if ENABLE_GPS
     GPS_SERIAL_PORT.begin( GPSBaud, SERIAL_8N1, RXPin, TXPin );
     ESP_LOGI(TAG, "GPS UART pins rx=%d tx=%d baud=%" PRIu32, RXPin, TXPin, GPSBaud);
     if (RXPin == LORA_SCLK || RXPin == LORA_MISO || RXPin == LORA_MOSI ||
@@ -75,6 +76,11 @@ void setup() {
                  LORA_SCLK, LORA_MISO, LORA_MOSI);
         displayMessage("GPS/LoRa pin conflict", true, TFT_RED);
     }
+#endif
+#if LIGHT_SENSOR
+    if (!initializeLightSensor())
+        displayMessage("Internal light failed", true, TFT_RED);
+#endif
     ESP_LOGI( TAG, "%s", "LoRa Sender" );
     displayMessage("LoRa Sender", true, screenColor);
 #else
@@ -137,6 +143,7 @@ void handleSender() {
         }
     }
 #endif
+#if ENABLE_GPS
     static unsigned long lastGpsDiag = 0;
 //    if (gps.location.isValid() && gps.location.isUpdated()) {
     if (gps.location.isValid() && gps.location.isUpdated() && gps.location.age() < NO_CONTACT_TIMEOUT) {
@@ -152,6 +159,9 @@ void handleSender() {
 
         if (acceptGpsMeasurement(rawLocation, &filteredLocation)) {
             location = filteredLocation;
+            if (gps.altitude.isValid() && gps.altitude.age() <= NO_CONTACT_TIMEOUT &&
+                std::isfinite(location.altitude))
+                lastAltitudeRefresh = millis() - gps.altitude.age();
             lastGpsRefresh = millis();
             gpsAvailable = true;
         } else {
@@ -171,13 +181,14 @@ void handleSender() {
             ESP_LOGW(TAG, "No NMEA stream detected on GPS UART; check wiring/pins/baud");
         }
     }
-#endif
+#endif // ENABLE_GPS
+#endif // SENDER
 
     // Send packet at regular intervals
     if (millis() - lastTxPacketTime > PACKET_INTERVAL) {
         lastTxPacketTime = millis();
 
-        if ((buildTxPayload().available & (TELEMETRY_HAS_GPS | TELEMETRY_HAS_ENV)) &&
+        if ((buildTxPayload().available & (TELEMETRY_HAS_GPS | TELEMETRY_HAS_ENV | TELEMETRY_HAS_LIGHT)) &&
             !sendDataWithAckRetries(ACK_RETRY_COUNT))
             ESP_LOGE( TAG, "Error sending payload data" );
         
@@ -233,9 +244,10 @@ int handlePacket() {
 
     const uint8_t packetType = static_cast<uint8_t>(loraMessage[0]);
 
-    if (packetType == LORA_PKT_TELEMETRY || packetType == 3) {
+    if (packetType == LORA_PKT_TELEMETRY || packetType == 3 ||
+        packetType == LORA_PKT_LIGHT_TELEMETRY || packetType == LORA_PKT_COMPACT_TELEMETRY) {
         loraTelemetryPacket received = {};
-        if (!decodeLoraTelemetryPacket(loraMessage, packetSize, &received)) {
+        if (!decodeLocalTelemetryPacket(loraMessage, packetSize, &received)) {
             ESP_LOGW(TAG, "Unexpected telemetry packet size %d", packetSize);
             return 0;
         }
@@ -282,10 +294,15 @@ telemetryData buildTxPayload() {
         payload.gps = {
             static_cast<int64_t>(std::llround(location.latitude * static_cast<double>(GPS_NANODEGREES_PER_DEGREE))),
             static_cast<int64_t>(std::llround(location.longitude * static_cast<double>(GPS_NANODEGREES_PER_DEGREE))),
-            location.altitude, location.speed,
-            static_cast<uint8_t>(location.sats < 0 ? 0 : location.sats > 255 ? 255 : location.sats), 0
+            location.altitude, 0, 0, 0
         };
+        if (lastAltitudeRefresh && millis() - lastAltitudeRefresh <= NO_CONTACT_TIMEOUT)
+            payload.available |= TELEMETRY_HAS_ALTITUDE;
     }
+#if defined(SENDER) && LIGHT_SENSOR
+    uint16_t lux = 0;
+    if (currentLightReading(lux)) setLightReading(payload, lux);
+#endif
     if (envAvailable && millis() - lastSensorRefresh <= NO_CONTACT_TIMEOUT) {
         payload.available |= TELEMETRY_HAS_ENV;
         payload.env = latestTelemetry.env;
@@ -295,11 +312,16 @@ telemetryData buildTxPayload() {
 }
 
 bool sendDataWithAckRetries(unsigned int maxAttempts) {
-    txPkt = {LORA_PKT_TELEMETRY, ++nextTxSeq, LoRa.packetSnr(),
+    txPkt = {LORA_PKT_COMPACT_TELEMETRY, ++nextTxSeq, LoRa.packetSnr(),
              M5.Power.getBatteryLevel(), buildTxPayload()};
+    CompactTelemetryPacket wirePacket;
+    if (!encodeCompactTelemetryPacket(txPkt, &wirePacket)) {
+        ESP_LOGE(TAG, "Invalid compact telemetry payload");
+        return false;
+    }
     ESP_LOGI(TAG, "Sending packet type=%u seq=%" PRIu32, txPkt.type, txPkt.seq);
     for (unsigned int attempt = 1; attempt <= maxAttempts; ++attempt) {
-        if (!sendPacket((char *)&txPkt, sizeof(txPkt))) {
+        if (!sendPacket(reinterpret_cast<char *>(&wirePacket), sizeof(wirePacket))) {
             ESP_LOGE(TAG, "Send attempt %u failed", attempt);
             continue;
         }
@@ -330,7 +352,10 @@ void serviceBackgroundTasks() {
 #endif
     }
     ArduinoOTA.handle();
-#ifdef SENDER
+#if defined(SENDER) && LIGHT_SENSOR
+    serviceLightSensor();
+#endif
+#if defined(SENDER) && ENABLE_GPS
     while (GPS_SERIAL_PORT.available()) {
         gps.encode( GPS_SERIAL_PORT.read() );
 
@@ -361,7 +386,7 @@ void handleReceiver() {
             msg.varValue = txPkt.payload.env.temperature;
             sendStatus(msg);
         }
-        else if (telemetryHas(txPkt.payload, TELEMETRY_HAS_GPS) && locationInBounds(txPkt.payload.gps)) {
+        else if (packetHasSpeedAndSatellites(txPkt) && locationInBounds(txPkt.payload.gps)) {
             StatusMessage msg = {};
             strncpy(msg.deviceName, me->name, sizeof(msg.deviceName) - 1);
             strcpy(msg.varName, "V");
@@ -376,21 +401,54 @@ void handleReceiver() {
     }
 }
 
+float calculateDewpointC( float temperatureC, float humidityPercent ) {
+    if( !std::isfinite( temperatureC ) || !std::isfinite( humidityPercent ) || humidityPercent <= 0.0f )
+        return NAN;
+
+    const float gamma = (17.62f * temperatureC) / (243.12f + temperatureC)
+                        + logf(humidityPercent * 0.01f);
+    return (243.12f * gamma) / (17.62f - gamma);
+}  
+
+float calculateSaturationVaporPressure( float dewPoint ) {
+    return( 6.112 * exp((17.62f * dewPoint) / (dewPoint + 243.12f)) ); // Saturation Vapor Pressure (Tetens Formula)
+} 
+
+float calculateMixingRatio( float p, float es ) {
+    return( 0.622 * es / (p - es) ); // Saturation Vapor Pressure (Tetens Formula)
+}
+
 bool postToThingsBoard(const loraTelemetryPacket &pkt) {
     char payload[TELEMETRY_DOC_SIZE];
     JsonDocument doc;
     if (telemetryHas(pkt.payload, TELEMETRY_HAS_GPS) && locationInBounds(pkt.payload.gps)) {
         doc["latitude"] = gpsLatitudeDegrees(pkt.payload.gps);
         doc["longitude"] = gpsLongitudeDegrees(pkt.payload.gps);
-        if (std::isfinite(pkt.payload.gps.altitude)) doc["altitude"] = pkt.payload.gps.altitude;
-        if (std::isfinite(pkt.payload.gps.speed)) doc["speed"] = pkt.payload.gps.speed;
-        doc["satellites"] = pkt.payload.gps.sats;
+        if (packetHasAltitude(pkt)) doc["altitude"] = pkt.payload.gps.altitude;
+        if (packetHasSpeedAndSatellites(pkt)) {
+            if (std::isfinite(pkt.payload.gps.speed)) doc["speed"] = pkt.payload.gps.speed;
+            doc["satellites"] = pkt.payload.gps.sats;
+        }
     }
     if (telemetryHas(pkt.payload, TELEMETRY_HAS_ENV)) {
         if (std::isfinite(pkt.payload.env.temperature)) doc["temperature"] = pkt.payload.env.temperature;
         if (std::isfinite(pkt.payload.env.humidity)) doc["humidity"] = pkt.payload.env.humidity;
         if (std::isfinite(pkt.payload.env.pressure)) doc["pressure"] = pkt.payload.env.pressure;
+
+        float myTemperature = pkt.payload.env.temperature;
+        float myPressure    = pkt.payload.env.pressure;
+        float myHumidity    = pkt.payload.env.humidity;
+
+        float dewPoint = calculateDewpointC( myTemperature, myHumidity );
+        if (std::isfinite(dewPoint)) doc["dew_point"] = dewPoint; 
+
+        float es = calculateSaturationVaporPressure( dewPoint ); // Saturation Vapor Pressure (Tetens Formula)
+        float mr = calculateMixingRatio( myPressure, es ) * 1000.0;
+        ESP_LOGV( TAG, "es=%.3f, mr=%.3f", es, mr );
+        if (std::isfinite(mr)) doc["mixing_ratio"] = mr;
     }
+    if (telemetryHas(pkt.payload, TELEMETRY_HAS_LIGHT))
+        doc["light_lux"] = lightReading(pkt.payload);
     if (doc.size() == 0 || !networkAvailable() || !mqttClient.connected()) return false;
     doc["pkt_rssi"] = LoRa.packetSnr();
     doc["remote_battery"] = pkt.batt;

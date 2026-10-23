@@ -2,7 +2,7 @@
 #include "../../src/mesh.cpp"
 int main() {
     assert(configureMeshIdentity());
-    assert(NUM_PEERS == NODE_COUNT - 1);
+    assert(NUM_PEERS == kMeshNodes.size() - 1);
     assert(memcmp(me->address, mockMac, 6) == 0);
     int sends = 0;
     onSend = [&]() { ++sends; return ESP_OK; };

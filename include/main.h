@@ -11,6 +11,8 @@
 #include <inttypes.h>
 #include "lora_config.h"
 #include "display.h"
+#include "sensor_config.h"
+#include "light_sensor.h"
 #include "gps_processing.h"
 #include "credentials.h"
 #include "mk_espmesh_lib.h"
@@ -25,6 +27,7 @@ loraStatus newStatus = {};
 unsigned long lastGpsRefresh = 0;
 unsigned long lastSensorRefresh = 0;
 bool gpsAvailable = false;
+unsigned long lastAltitudeRefresh = 0;
 bool envAvailable = false;
 #if defined(ENV3)
 bool sensorsReady = false;
@@ -42,7 +45,7 @@ static uint16_t lastRange = 0;
 
 char TAG[36];
 
-#ifdef SENDER
+#if defined(SENDER) && ENABLE_GPS
     #define GPS_SERIAL_PORT Serial1
     #include <TinyGPSPlus.h>
     TinyGPSPlus gps;

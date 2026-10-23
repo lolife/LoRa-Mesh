@@ -1,12 +1,13 @@
 #pragma once
 
 #include "lora_protocol.h"
+#include "sensor_config.h"
 
 bool nearlyZero(double valueToCheck);
 bool locationInBounds(legacyGpsData newLocation);
 bool acceptGpsMeasurement(const legacyGpsData &raw, legacyGpsData *filtered);
 
-#ifdef SENDER
+#if defined(SENDER) && ENABLE_GPS
 bool initSdLogging();
 void appendGpsLogRow(const legacyGpsData &predicted,
                      const legacyGpsData &actual,
@@ -17,6 +18,8 @@ void appendGpsLogRow(const legacyGpsData &predicted,
 #endif
 
 inline bool locationInBounds(const gpsData &data) {
-    return locationInBounds(legacyGpsData{static_cast<float>(gpsLatitudeDegrees(data)),
-        static_cast<float>(gpsLongitudeDegrees(data)), data.altitude, data.speed, data.sats});
+    return data.latitudeNanodegrees >= -90 * GPS_NANODEGREES_PER_DEGREE &&
+        data.latitudeNanodegrees <= 90 * GPS_NANODEGREES_PER_DEGREE &&
+        data.longitudeNanodegrees >= -180 * GPS_NANODEGREES_PER_DEGREE &&
+        data.longitudeNanodegrees <= 180 * GPS_NANODEGREES_PER_DEGREE;
 }

@@ -5,7 +5,7 @@
 #include <math.h>
 #include "esp_log.h"
 
-#ifdef SENDER
+#if defined(SENDER) && ENABLE_GPS
 #include <SD.h>
 #include <TinyGPSPlus.h>
 extern TinyGPSPlus gps;
@@ -51,7 +51,7 @@ struct GpsKalmanFilter {
 
 GpsKalmanFilter gGpsFilter;
 
-#ifdef SENDER
+#if defined(SENDER) && ENABLE_GPS
 constexpr int SD_SPI_CS = 4;
 constexpr const char *GPS_LOG_FILE = "/gps_kalman_log.csv";
 bool sdLoggingReady = false;
@@ -156,7 +156,7 @@ bool acceptGpsMeasurement(const legacyGpsData &raw, legacyGpsData *filtered) {
         gGpsFilter.lastMs = millis();
         gGpsFilter.initialized = true;
         *filtered = raw;
-#ifdef SENDER
+#if defined(SENDER) && ENABLE_GPS
         if (sdLoggingReady) {
             appendGpsLogRow(raw, raw, raw, newStatus.snr, true, 0.0f);
         }
@@ -176,7 +176,7 @@ bool acceptGpsMeasurement(const legacyGpsData &raw, legacyGpsData *filtered) {
         initAxis(gGpsFilter.east, eastM);
         initAxis(gGpsFilter.north, northM);
         *filtered = raw;
-#ifdef SENDER
+#if defined(SENDER) && ENABLE_GPS
         if (sdLoggingReady) {
             appendGpsLogRow(raw, raw, raw, newStatus.snr, true, 0.0f);
         }
@@ -207,7 +207,7 @@ bool acceptGpsMeasurement(const legacyGpsData &raw, legacyGpsData *filtered) {
 
     if (nis > OUTLIER_NIS_THRESHOLD) {
         ESP_LOGI(TAG, "%s", "Dropping errant data point");
-#ifdef SENDER
+#if defined(SENDER) && ENABLE_GPS
         if (sdLoggingReady) {
             appendGpsLogRow(predictedLocation, actualLocation, predictedLocation, newStatus.snr, false, nis);
         }
@@ -227,7 +227,7 @@ bool acceptGpsMeasurement(const legacyGpsData &raw, legacyGpsData *filtered) {
     filtered->altitude = raw.altitude;
     filtered->speed = raw.speed;
     filtered->sats = raw.sats;
-#ifdef SENDER
+#if defined(SENDER) && ENABLE_GPS
     if (sdLoggingReady) {
         appendGpsLogRow(predictedLocation, actualLocation, *filtered, newStatus.snr, true, nis);
     }
@@ -235,7 +235,7 @@ bool acceptGpsMeasurement(const legacyGpsData &raw, legacyGpsData *filtered) {
     return true;
 }
 
-#ifdef SENDER
+#if defined(SENDER) && ENABLE_GPS
 bool initSdLogging() {
     if (!SD.begin(SD_SPI_CS)) {
         ESP_LOGE(TAG, "SD init failed; GPS logging disabled");

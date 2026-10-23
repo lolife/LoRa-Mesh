@@ -86,10 +86,20 @@ void updateDisplay(const loraTelemetryPacket &pkt, bool isSender,
         snprintf(msg, sizeof(msg), "Lon %.9f",
                  gpsLongitudeDegrees(pkt.payload.gps));
         printLine(msg);
-        snprintf(msg, sizeof(msg), "Alt %.0f m  %.1f mph",
-                 pkt.payload.gps.altitude, pkt.payload.gps.speed);
-        printLine(msg);
-        snprintf(msg, sizeof(msg), "%u sats", static_cast<unsigned>(pkt.payload.gps.sats));
+        if (packetHasAltitude(pkt)) {
+            snprintf(msg, sizeof(msg), "Alt %.0f m", pkt.payload.gps.altitude);
+            printLine(msg);
+        }
+        if (packetHasSpeedAndSatellites(pkt)) {
+            snprintf(msg, sizeof(msg), "%.1f mph  %u sats", pkt.payload.gps.speed,
+                     static_cast<unsigned>(pkt.payload.gps.sats));
+            printLine(msg);
+        }
+    }
+
+    if (telemetryHas(pkt.payload, TELEMETRY_HAS_LIGHT)) {
+        snprintf(msg, sizeof(msg), "Light %u lux",
+                 static_cast<unsigned>(lightReading(pkt.payload)));
         printLine(msg);
     }
 
@@ -102,7 +112,8 @@ void updateDisplay(const loraTelemetryPacket &pkt, bool isSender,
     }
 
     if (!telemetryHas(pkt.payload, TELEMETRY_HAS_GPS) &&
-        !telemetryHas(pkt.payload, TELEMETRY_HAS_ENV)) {
+        !telemetryHas(pkt.payload, TELEMETRY_HAS_ENV) &&
+        !telemetryHas(pkt.payload, TELEMETRY_HAS_LIGHT)) {
         printLine("No telemetry");
     }
 
