@@ -6,6 +6,8 @@ void initializeDisplayMotion();
 // Returns true when motion has just woken the display.
 bool serviceDisplayMotion();
 bool isDisplayAwake();
+// Wake for the normal idle period when a new photo arrives or the user taps.
+void wakeDisplay();
 
 /**
  * Display a centered message on the screen

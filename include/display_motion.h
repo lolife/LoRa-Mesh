@@ -11,6 +11,7 @@ constexpr uint32_t DISPLAY_MOTION_SAMPLE_MS = 50;
 
 class DisplayMotion {
 public:
+    void wake(uint32_t now) { lastMotion_ = now; awake_ = true; }
     bool update(uint32_t now, bool valid, float x, float y, float z) {
         if (valid && std::isfinite(x) && std::isfinite(y) && std::isfinite(z)) {
             if (!hasBaseline_) {

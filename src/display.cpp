@@ -1,5 +1,6 @@
 #include "display.h"
 #include "display_motion.h"
+#include "photo_transfer.h"
 #include <cstdio>
 
 extern uint16_t screenColor;
@@ -9,12 +10,28 @@ namespace {
 DisplayMotion motion;
 bool displayAwake = false;
 uint32_t lastMotionSample = 0;
+#if defined(RECEIVER) && ENABLE_PHOTOS
+constexpr uint8_t DISPLAY_AWAKE_BRIGHTNESS = PHOTO_DISPLAY_BRIGHTNESS;
+#else
 constexpr uint8_t DISPLAY_AWAKE_BRIGHTNESS = 80;
+#endif
 }
 
 bool isDisplayAwake() { return displayAwake; }
 
+void wakeDisplay() {
+    motion.wake(millis());
+    displayAwake = true;
+    M5.Display.wakeup();
+    M5.Display.setBrightness(DISPLAY_AWAKE_BRIGHTNESS);
+}
+
 void initializeDisplayMotion() {
+#if defined(RECEIVER) && ENABLE_PHOTOS
+    M5.Display.fillScreen(TFT_BLACK);
+    wakeDisplay();
+    log_i("Photo receiver display always on, minimum brightness %u", DISPLAY_AWAKE_BRIGHTNESS);
+#else
     M5.Display.setBrightness(0);
     M5.Display.sleep();
     motion = DisplayMotion{};
@@ -24,9 +41,18 @@ void initializeDisplayMotion() {
     if (!M5.Imu.isEnabled()) {
         log_w("Display motion wake unavailable: internal IMU not detected");
     }
+#endif
 }
 
 bool serviceDisplayMotion() {
+#if defined(RECEIVER) && ENABLE_PHOTOS
+    if (!displayAwake || M5.Display.getBrightness() < DISPLAY_AWAKE_BRIGHTNESS) {
+        wakeDisplay();
+        log_w("Restored photo receiver always-on display");
+        return true;
+    }
+    return false;
+#else
     const uint32_t now = millis();
     if (uint32_t(now - lastMotionSample) < DISPLAY_MOTION_SAMPLE_MS) return false;
     lastMotionSample = now;
@@ -43,9 +69,13 @@ bool serviceDisplayMotion() {
         M5.Display.sleep();
     }
     return awake;
+#endif
 }
 
 void displayMessage(const char* msg, bool clearScreen, uint16_t bgColor) {
+#if defined(RECEIVER) && ENABLE_PHOTOS
+    return; // Keep setup/error text off the photo-only receiver screen.
+#endif
     if (!isDisplayAwake()) return;
     if (clearScreen) {
         M5.Display.clear(bgColor);
@@ -66,6 +96,7 @@ void centerCursor(const lgfx::GFXfont* font, int size, const char* text) {
 
 void updateDisplay(const loraTelemetryPacket &pkt, bool isSender,
                    float localSnr, bool localSnrValid) {
+    if (drawPhotoView(isSender, pkt)) return;
     if (!isDisplayAwake()) return;
     static char msg[64];
 

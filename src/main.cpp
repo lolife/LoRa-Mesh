@@ -5,6 +5,8 @@
 #include <esp_ota_ops.h>
 #include <esp_app_desc.h>
 #include <esp_system.h>
+#include "photo_transfer.h"
+#include "build_info.h"
 
 extern char    loraMessage[MAX_MSG_SIZE];
 
@@ -32,7 +34,7 @@ static void setupOtaDiagnostics() {
 void setup() {
     //Serial.begin( 115200 );
     // Initialize M5Stack with proper configuration
-    ESP_LOGI(TAG, "FW %s %s", __DATE__, __TIME__);
+    ESP_LOGI(TAG, "%s", firmwareVersion);
     setupOtaDiagnostics();
     auto cfg = M5.config();
     cfg.clear_display = true;
@@ -41,7 +43,9 @@ void setup() {
     cfg.internal_spk = false;  // Disable speaker
     cfg.internal_mic = false;  // Disable microphone
     M5.begin(cfg);
-    
+    M5.Display.clear();
+    M5.Display.clearFileStorage();
+
     initializeDisplayMotion();
     M5.Display.setRotation(1);
     M5.Display.setFont(&Orbitron_Light_32);
@@ -89,6 +93,7 @@ void setup() {
     snprintf( TAG, sizeof(TAG), "⬅️LoRaMeshReceive" ); 
     ESP_LOGI( TAG, "%s", "LoRa Receiverr" );
 #endif
+    initializePhotos();
 } 
 
 void loop() {
@@ -100,6 +105,14 @@ void loop() {
 #else
     handleReceiver();
 #endif
+
+    if (servicePhotos()) {
+#ifdef SENDER
+        updateDisplay(txPkt, true, LoRa.packetSnr(), newStatus.seq == txPkt.seq && txPkt.seq != 0);
+#else
+        updateDisplay(txPkt, false, LoRa.packetSnr(), txPkt.payload.available != 0);
+#endif
+    }
 
 #ifdef RECEIVER
     // Service received packets first; broker connects stay outside ACK waits.
@@ -241,6 +254,8 @@ int handlePacket() {
     int packetSize = receivePacket();
     if( packetSize < 1 )
         return 0;
+
+    if (handlePhotoPacket(reinterpret_cast<const uint8_t*>(loraMessage), packetSize)) return 0;
 
     const uint8_t packetType = static_cast<uint8_t>(loraMessage[0]);
 

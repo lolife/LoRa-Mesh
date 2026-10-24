@@ -82,7 +82,7 @@ public:
  friend String operator+(const char* a,const String& b){return std::string(a)+std::string(b);}
  friend String operator+(const String& a,const char* b){return std::string(a)+std::string(b);}
 };
-inline struct M5Mock { struct DisplayMock { void setBrightness(int){} } Display; int getBoard(){return 1;} } M5;
+inline struct M5Mock { struct DisplayMock { int brightness=80; void setBrightness(int value){brightness=value;} } Display; int getBoard(){return 1;} } M5;
 inline struct MeshIdentityMock { const char* name="Woods"; } meshIdentityMock;
 inline auto* me=&meshIdentityMock;
 inline const char* getDeviceToken(){return "primary-token";}

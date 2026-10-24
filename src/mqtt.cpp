@@ -6,6 +6,8 @@
 #include "mk_espmesh_lib.h"
 #include "network_recovery.h"
 #include "board_name.h"
+#include "photo_config.h"
+#include "build_info.h"
 
 const char* TB_SERVER = "mqtt.thingsboard.cloud";
 
@@ -22,7 +24,7 @@ static unsigned long lastAttributeAttempt = 0;
 
 static bool postAttributesToThingsBoard() {
     JsonDocument doc;
-    doc["firmware_version"] = "FW " __DATE__ " " __TIME__;
+    doc["firmware_version"] = firmwareVersion;
     doc["ip_address"] = WiFi.localIP().toString();
     doc["mac_address"] = WiFi.macAddress();
     doc["board"] = boardName(M5.getBoard());
@@ -152,6 +154,18 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         else if (strcmp(method, "setBrightness") == 0) {
             if (params.containsKey("value")) {
                 int brightness = params["value"];
+#if ENABLE_PHOTOS
+                // Photo receiver must remain visibly on, including when a
+                // dashboard/RPC asks to turn off or dim the backlight.
+                if (brightness < PHOTO_DISPLAY_BRIGHTNESS) {
+                    ESP_LOGW(TAG, "Brightness RPC requested %d; photo receiver minimum is %d",
+                             brightness, PHOTO_DISPLAY_BRIGHTNESS);
+                    brightness = PHOTO_DISPLAY_BRIGHTNESS;
+                }
+#else
+                if (brightness < 0) brightness = 0;
+#endif
+                if (brightness > 255) brightness = 255;
                 M5.Display.setBrightness(brightness);
                 responseValue = "{\"result\":\"ok\",\"brightness\":" + String(brightness) + "}";
             }

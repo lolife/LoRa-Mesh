@@ -26,4 +26,11 @@ int main() {
     assert(rollover.update(start + 50, true, 0.2f, 0, 1));
     assert(rollover.update(start + 30049, true, 0.2f, 0, 1));
     assert(!rollover.update(start + 30050, true, 0.2f, 0, 1));
+
+    // A photo can wake a stationary receiver, even with no IMU. The normal
+    // idle timeout and millis rollover still apply.
+    DisplayMotion arrival;
+    arrival.wake(start);
+    assert(arrival.update(start + 29999, false, 0, 0, 0));
+    assert(!arrival.update(start + 30000, false, 0, 0, 0));
 }

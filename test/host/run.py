@@ -13,7 +13,7 @@ if sys.platform == 'darwin':
     sdk = subprocess.check_output(['xcrun', '--show-sdk-path'], text=True).strip()
     flags += ['-isystem', sdk+'/usr/include/c++/v1']
 with tempfile.TemporaryDirectory(prefix='lora-mesh-test-') as out:
-    for name in (sys.argv[1:] or ['protocol_test', 'light_test', 'compact_test', 'tx_test', 'mesh_test', 'display_motion_test']):
+    for name in (sys.argv[1:] or ['protocol_test', 'light_test', 'compact_test', 'tx_test', 'mesh_test', 'display_motion_test', 'photo_test', 'radio_test', 'photo_freshness_test']):
         binary = str(Path(out)/name)
         subprocess.run(flags + ['-D'+('TEST_MESH' if name == 'mesh_test' else 'TEST_TX_WORKER'), str(test/(name+'.cpp')), str(root.parent/'MeshProtocol/src/registry.cpp'), '-o', binary], check=True)
         subprocess.run([binary], check=True)
